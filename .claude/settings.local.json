@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la *.yaml *.yml *.json)",
+      "Bash(npm install)",
+      "Bash(npm run seed:run:document)"
+    ]
+  }
+}
