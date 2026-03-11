@@ -3,7 +3,10 @@
     "allow": [
       "Bash(ls -la *.yaml *.yml *.json)",
       "Bash(npm install)",
-      "Bash(npm run seed:run:document)"
+      "Bash(npm run seed:run:document)",
+      "Bash(find 'g:/garudan pvt/cofee vending/backend/nestjs-boilerplate-main/nestjs-boilerplate-main/src' -name *.module.ts)",
+      "Bash(find 'g:/garudan pvt/cofee vending/backend/nestjs-boilerplate-main/nestjs-boilerplate-main/src' -name machine*)",
+      "Bash(xargs grep:*)"
     ]
   }
 }
