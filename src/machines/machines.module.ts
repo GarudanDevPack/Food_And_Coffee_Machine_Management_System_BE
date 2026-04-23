@@ -9,6 +9,7 @@ import { Item, ItemSchema } from '../items/schemas/item.schema';
 import { WalletModule } from '../wallet/wallet.module';
 import { AlertsModule } from '../alerts/alerts.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { EventsModule } from '../events/events.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     WalletModule,
     AlertsModule,
     NotificationsModule,
+    EventsModule,
   ],
   controllers: [MachinesController, MachinesPublicController],
   providers: [MachinesService],

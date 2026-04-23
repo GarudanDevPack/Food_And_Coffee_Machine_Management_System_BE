@@ -9,6 +9,7 @@ import { ItemsModule } from '../items/items.module';
 import { MembershipsModule } from '../memberships/memberships.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PromotionsModule } from '../promotions/promotions.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { PromotionsModule } from '../promotions/promotions.module';
     MembershipsModule,
     NotificationsModule,
     PromotionsModule,
+    UsersModule,
   ],
   controllers: [OrdersController],
   providers: [OrdersService],

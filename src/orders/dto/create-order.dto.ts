@@ -5,17 +5,20 @@ import {
   IsNumber,
   Min,
   IsOptional,
+  IsMongoId,
 } from 'class-validator';
 
 export class CreateOrderDto {
-  @ApiProperty({ example: 'MACHINE_001' })
+  @ApiProperty({ example: 'MCH-001' })
   @IsString()
   @IsNotEmpty()
   machineId: string;
 
-  @ApiProperty()
-  @IsString()
-  @IsNotEmpty()
+  @ApiProperty({
+    example: '507f1f77bcf86cd799439011',
+    description: 'MongoDB _id of the item',
+  })
+  @IsMongoId()
   itemId: string;
 
   @ApiPropertyOptional({
@@ -39,6 +42,6 @@ export class CreateOrderDto {
     example: '507f1f77bcf86cd799439011',
   })
   @IsOptional()
-  @IsString()
+  @IsMongoId()
   targetUserId?: string;
 }

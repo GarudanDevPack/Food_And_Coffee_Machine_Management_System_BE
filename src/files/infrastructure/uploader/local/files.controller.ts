@@ -1,4 +1,6 @@
+import * as nodePath from 'path';
 import {
+  BadRequestException,
   Controller,
   Get,
   Param,
@@ -56,7 +58,13 @@ export class FilesLocalController {
 
   @Get(':path')
   @ApiExcludeEndpoint()
-  download(@Param('path') path, @Response() response) {
-    return response.sendFile(path, { root: './files' });
+  download(@Param('path') path: string, @Response() response) {
+    const normalised = nodePath
+      .normalize(path)
+      .replace(/^(\.\.(\/|\\|$))+/, '');
+    if (normalised !== nodePath.basename(normalised)) {
+      throw new BadRequestException('Invalid file path');
+    }
+    return response.sendFile(normalised, { root: './files' });
   }
 }

@@ -1,8 +1,5 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(npm run build)",
-      "Bash(npx tsc --noEmit)"
-    ]
+    "allow": ["Bash(npm run build)", "Bash(npx tsc --noEmit)"]
   }
 }

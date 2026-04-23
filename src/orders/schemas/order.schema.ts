@@ -54,6 +54,7 @@ export class Order {
       'pending',
       'dispensing',
       'completed',
+      'half-completed',
       'failed',
       'refunded',
       'cancelled',
@@ -78,6 +79,22 @@ export class Order {
 
   @Prop({ type: String })
   failureReason?: string;
+
+  /**
+   * How the order will be fulfilled.
+   * 'auto'   — machine dispenses automatically (default for vending orders)
+   * 'manual' — agent physically delivers (food delivery orders)
+   */
+  @Prop({ type: String, enum: ['auto', 'manual'], default: 'auto' })
+  deliveryType?: string;
+
+  /** Customer delivery address for manual orders */
+  @Prop({ type: String, default: null })
+  deliveryAddress?: string | null;
+
+  /** Special instructions from the customer */
+  @Prop({ type: String, default: null })
+  specialInstructions?: string | null;
 
   @Prop({ default: now })
   createdAt: Date;

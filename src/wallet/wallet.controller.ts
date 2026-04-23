@@ -76,6 +76,55 @@ export class WalletController {
     return this.walletService.getAllWallets();
   }
 
+  /**
+   * GET /wallet/transactions
+   * Admin: all transactions across all users, enriched with customer + agent details.
+   *
+   * Response format per item:
+   * {
+   *   id, customerId, customerName, customerPhone,
+   *   amount, date, paymentMethod, status, reference,
+   *   notes, processedBy, createdAt, updatedAt
+   * }
+   */
+  @Get('transactions')
+  @Roles(RoleEnum.super_admin, RoleEnum.admin, RoleEnum.agent)
+  @ApiOperation({
+    summary: 'Admin: all enriched transactions (with customer & agent info)',
+  })
+  @ApiQuery({ name: 'limit', required: false, example: 100 })
+  @ApiQuery({ name: 'skip', required: false, example: 0 })
+  @ApiQuery({
+    name: 'userId',
+    required: false,
+    description: 'Filter by customer userId',
+  })
+  @ApiQuery({
+    name: 'category',
+    required: false,
+    enum: [
+      'topup_qr',
+      'topup_bank',
+      'agent_topup',
+      'order_payment',
+      'refund',
+      'adjustment',
+    ],
+  })
+  getAllTransactions(
+    @Query('limit') limit?: string,
+    @Query('skip') skip?: string,
+    @Query('userId') userId?: string,
+    @Query('category') category?: string,
+  ) {
+    return this.walletService.getAllTransactionsEnriched(
+      limit ? parseInt(limit) : 100,
+      skip ? parseInt(skip) : 0,
+      userId,
+      category,
+    );
+  }
+
   // Admin: get specific user's wallet
   @Get('user/:userId')
   @Roles(RoleEnum.super_admin, RoleEnum.admin)

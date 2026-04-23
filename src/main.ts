@@ -55,6 +55,14 @@ async function bootstrap() {
     { path: 'getorderbyuser', method: RequestMethod.GET },
     { path: 'ordersbyuser', method: RequestMethod.GET },
     { path: 'orderbyid', method: RequestMethod.GET },
+    // Legacy machine routes used by admin panel and mobile app
+    { path: 'getmachinelog', method: RequestMethod.GET },
+    { path: 'getmachinesitems', method: RequestMethod.GET },
+    { path: 'getvolumesizes', method: RequestMethod.GET },
+    { path: 'getallmachinelogs', method: RequestMethod.GET },
+    { path: 'getallmachinebyclient', method: RequestMethod.GET },
+    { path: 'updatemachinelog', method: RequestMethod.PUT },
+    { path: 'updatemachinelogstatus', method: RequestMethod.PUT },
   ];
 
   app.setGlobalPrefix(

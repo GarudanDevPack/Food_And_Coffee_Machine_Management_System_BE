@@ -18,6 +18,8 @@ export class Alert {
       'machine_offline',
       'dispense_failure',
       'maintenance_required',
+      'batch_expired',
+      'temperature_high',
       'custom',
     ],
     required: true,

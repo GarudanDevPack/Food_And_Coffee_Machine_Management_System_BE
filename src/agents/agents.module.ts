@@ -7,6 +7,7 @@ import { OrdersModule } from '../orders/orders.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { MembershipsModule } from '../memberships/memberships.module';
 import { UsersModule } from '../users/users.module';
+import { AlertsModule } from '../alerts/alerts.module';
 import { AgentLog, AgentLogSchema } from './schemas/agent-log.schema';
 
 @Module({
@@ -16,6 +17,7 @@ import { AgentLog, AgentLogSchema } from './schemas/agent-log.schema';
     WalletModule,
     MembershipsModule,
     UsersModule,
+    AlertsModule,
     MongooseModule.forFeature([
       { name: AgentLog.name, schema: AgentLogSchema },
     ]),

@@ -52,6 +52,7 @@ export class Machine {
       {
         itemId: { type: String },
         currentStock: { type: Number, default: 0 }, // grams remaining
+        cupcount: { type: Number, default: 0 }, // calculated: floor(currentStock / gramsPerCup)
         minStock: { type: Number, default: 5 },
         nozzle: { type: Number, default: 1 },
         gramsPerCup: { type: Number, default: 18 },
@@ -62,6 +63,7 @@ export class Machine {
   inventory: {
     itemId: string;
     currentStock: number;
+    cupcount: number;
     minStock: number;
     nozzle: number;
     gramsPerCup: number;
@@ -161,6 +163,9 @@ export class Machine {
 
   @Prop({ type: Boolean, default: false })
   sleepMode: boolean;
+
+  @Prop({ type: Boolean, default: false })
+  flushMode: boolean;
 
   @Prop({ type: Boolean, default: false })
   autoFlushEnabled: boolean;

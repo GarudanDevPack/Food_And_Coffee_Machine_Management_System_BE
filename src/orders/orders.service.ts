@@ -17,6 +17,7 @@ import { MqttService } from '../mqtt/mqtt.service';
 import { MembershipsService } from '../memberships/memberships.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PromotionsService } from '../promotions/promotions.service';
+import { UsersService } from '../users/users.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 
 /**
@@ -47,6 +48,7 @@ export class OrdersService {
     private readonly membershipsService: MembershipsService,
     private readonly notificationsService: NotificationsService,
     private readonly promotionsService: PromotionsService,
+    private readonly usersService: UsersService,
   ) {}
 
   /**
@@ -122,7 +124,9 @@ export class OrdersService {
     if (isFoodMachine) {
       const activeBatch = ((machine as any).batches as any[])?.find(
         (b) =>
-          b.itemId === dto.itemId && b.status === 'active' && b.quantity > 0,
+          b.itemId === dto.itemId &&
+          b.status === 'active' &&
+          b.quantity >= dto.quantity,
       );
       if (!activeBatch) {
         throw new BadRequestException(
@@ -145,16 +149,35 @@ export class OrdersService {
       const inv = ((machine as any).inventory as any[])?.find(
         (i) => i.itemId === dto.itemId,
       );
-      if (!inv || inv.currentStock <= 0) {
+      // Verify enough grams remain for the full quantity ordered.
+      // Using just currentStock > 0 would accept an order for 2 cups when only
+      // 1 cup's worth of grams remain — the machine would dispense 1 then run dry,
+      // resulting in a half-completed order and an unnecessary refund experience.
+      const gramsNeeded =
+        (dto.quantity ?? 1) * (inv?.gramsPerCup > 0 ? inv.gramsPerCup : 18);
+      if (!inv || inv.currentStock < gramsNeeded) {
         throw new BadRequestException(
-          'This item is out of stock on this machine',
+          'Insufficient stock for this order quantity',
         );
       }
     }
 
-    // 3b. Machine must be online
+    // 3b. Machine must be online and not sleeping
+    if ((machine as any).sleepMode === true) {
+      throw new BadRequestException('Machine is in sleep mode');
+    }
     if (!(machine as any).isOnline) {
       throw new BadRequestException('Machine is currently offline');
+    }
+
+    // 3c. Coffee only — boiler must have water (food machines have no water sensor)
+    if (!isFoodMachine) {
+      const waterLevel = (machine as any).sensor?.water;
+      if (waterLevel && waterLevel !== 'present') {
+        throw new BadRequestException(
+          'Machine boiler has no water — please wait for refill',
+        );
+      }
     }
 
     // 3c. Auto-cancel stale pending orders from same user (before queue check)
@@ -253,6 +276,8 @@ export class OrdersService {
       status: 'pending',
     }).save();
 
+    let batchDeducted = false;
+
     try {
       // 7. Deduct from the effective customer's wallet
       const tx = await this.walletService.deduct(
@@ -281,6 +306,10 @@ export class OrdersService {
           dto.quantity,
         );
         nozzleId = batchResult.nozzleId;
+        batchDeducted = true;
+        this.logger.log(
+          `[Order] Food machine: nozzle=${nozzleId} item=${item.name} qty=${dto.quantity}`,
+        );
       } else {
         // Coffee: look up machine-specific calibration timers for this item + cup size
         const calib = ((machine as any).calibration as any[])?.find(
@@ -289,6 +318,10 @@ export class OrdersService {
         nozzleId = calib?.nozzle;
         timerOfWater = calib?.timerOfWater;
         timerOfPowder = calib?.timerOfPowder;
+        this.logger.log(
+          `[Order] Coffee machine: nozzle=${nozzleId} item=${item.name} cupSize=${dto.cupSize} ` +
+            `water=${timerOfWater ?? 5000}ms powder=${timerOfPowder ?? 3000}ms`,
+        );
 
         // Hardware constraint: water timer must lead powder timer by ≥ 100ms
         if (
@@ -300,12 +333,8 @@ export class OrdersService {
             `Timer mismatch on machine ${dto.machineId}: timerOfWater (${timerOfWater}ms) must be >= timerOfPowder (${timerOfPowder}ms) + 100ms. Update calibration.`,
           );
         }
-
-        await this.machinesService.deductStock(
-          dto.machineId,
-          dto.itemId,
-          dto.quantity,
-        );
+        // Stock deduction happens ONLY after MQTT confirmation (handleOrderStatusUpdate)
+        // to match the physical dispensing — NOT at order placement.
       }
 
       // 9. Publish MQTT dispense command with correct nozzle + calibrated timers
@@ -367,6 +396,28 @@ export class OrdersService {
       order.status = 'failed';
       order.failureReason = (err as Error).message;
       await order.save();
+
+      // Refund wallet only if it was already deducted (transactionId set = money taken)
+      if (order.transactionId) {
+        await this.walletService
+          .refund(effectiveUserId, totalAmount, order._id.toString())
+          .catch((e) =>
+            this.logger.error(
+              `Refund failed for order ${order.orderId}: ${(e as Error).message}`,
+            ),
+          );
+        // Restore food batch if it was deducted before the error
+        if (isFoodMachine && batchDeducted) {
+          await this.machinesService
+            .restoreBatchStock(dto.machineId, dto.itemId, dto.quantity)
+            .catch((e) =>
+              this.logger.error(
+                `Batch restore failed for order ${order.orderId}: ${(e as Error).message}`,
+              ),
+            );
+        }
+      }
+
       throw err;
     }
   }
@@ -636,6 +687,19 @@ export class OrdersService {
       throw new BadRequestException('Machine is currently offline');
     }
 
+    const machineTypeLegacy: 'coffee' | 'food' =
+      (machine as any).machineType ?? 'coffee';
+
+    // Coffee only — boiler must have water (food machines have no water sensor)
+    if (machineTypeLegacy !== 'food') {
+      const waterLevel = (machine as any).sensor?.water;
+      if (waterLevel && waterLevel !== 'present') {
+        throw new BadRequestException(
+          'Machine boiler has no water — please wait for refill',
+        );
+      }
+    }
+
     // Reject if machine already has an active order
     const busyOrder = await this.orderModel.findOne({
       machineId: machine_id,
@@ -645,12 +709,29 @@ export class OrdersService {
       throw new BadRequestException('Machine is busy. Please wait.');
     }
 
+    // Resolve CUS-format ID (CUS-YYYYMMDD-HHMMSS) → MongoDB ObjectId for wallet lookup
+    let effectiveUserId = user.id;
+    if (user.id?.startsWith('CUS-')) {
+      const userRecord = await this.usersService
+        .findByCustomerId(user.id)
+        .catch(() => null);
+      if (userRecord) effectiveUserId = (userRecord as any)._id.toString();
+    }
+
+    this.logger.log(
+      `[Order] Checking wallet for user ${user.id} (effectiveId=${effectiveUserId}), amount: ${amount} ${currency}`,
+    );
+
     // Deduct wallet
     const tx = await this.walletService.deduct(
-      user.id,
+      effectiveUserId,
       amount,
       `legacy-${Date.now()}`,
       `Order on machine ${machine_id}`,
+    );
+
+    this.logger.log(
+      `[Order] Wallet deduction successful: previous=${(tx as any).balanceBefore} → new=${(tx as any).balanceAfter} (deducted ${amount} ${currency})`,
     );
 
     // Build order record from old format
@@ -658,7 +739,7 @@ export class OrdersService {
     const firstItem = items[0];
     const order = await new this.orderModel({
       orderId,
-      userId: user.id,
+      userId: effectiveUserId,
       machineId: machine_id,
       itemId: firstItem.item_id,
       itemName: firstItem.item_name,
@@ -671,38 +752,77 @@ export class OrdersService {
       transactionId: tx.id,
     }).save();
 
-    // Look up calibration timers for this item + cup size
-    const calib = (((machine as any).calibration as any[]) ?? []).find(
-      (c: any) =>
-        c.itemId === firstItem.item_id &&
-        c.cupSize === (firstItem.vol ?? '').replace('ml', '').trim(),
+    this.logger.log(
+      `[Order] Order created: ${orderId} | machine=${machine_id} | user=${user.id} | items=${items.length}`,
     );
-    const machineType: 'coffee' | 'food' =
-      (machine as any).machineType ?? 'coffee';
-    const nozzle = firstItem.nozzle ?? calib?.nozzle ?? 1;
-    const timerOfWater = calib?.timerOfWater ?? 5000;
-    const timerOfPowder = calib?.timerOfPowder ?? 3000;
 
-    // Hardware constraint: water timer must lead powder timer by ≥ 100ms (coffee only)
-    if (machineType === 'coffee' && timerOfWater < timerOfPowder + 100) {
-      throw new BadRequestException(
-        `Timer mismatch: timerOfWater (${timerOfWater}ms) must be >= timerOfPowder (${timerOfPowder}ms) + 100ms. Update calibration for machine ${machine_id}.`,
+    const machineType = machineTypeLegacy;
+    const calibration: any[] = (machine as any).calibration ?? [];
+
+    // Normalize vol string to match either "90" or "90ml" stored in calibration
+    const normalizeVol = (vol: string) => vol.replace(/ml/i, '').trim();
+
+    // Build comma-separated ord string for ALL items (matches old backend multi-item format)
+    const ordParts = (items as any[]).map((item: any) => {
+      const volNorm = normalizeVol(item.vol ?? '');
+      // Match calibration by itemId + cupSize — handles both "90" and "90ml" stored formats
+      const calib = calibration.find(
+        (c: any) =>
+          c.itemId === item.item_id &&
+          (c.cupSize === item.vol || normalizeVol(c.cupSize ?? '') === volNorm),
       );
+      const noz = item.nozzle ?? calib?.nozzle ?? 1;
+      const tw = calib?.timerOfWater ?? 5000;
+      const tp = calib?.timerOfPowder ?? 3000;
+
+      this.logger.log(
+        `[Order] Item: nozzle=${noz} name=${item.item_name} qty=${item.qty ?? 1} ` +
+          (machineType === 'food' ? '' : `water=${tw}ms powder=${tp}ms`),
+      );
+
+      return machineType === 'food'
+        ? `N${noz}-${item.item_name}-${item.qty ?? 1}-`
+        : `N${noz}-${item.item_name}-${item.qty ?? 1}-${tw}-${tp}`;
+    });
+
+    const ordStr = ordParts.join(',');
+    this.logger.log(`[Order] MQTT ord string: ${ordStr}`);
+
+    // Hardware constraint for coffee: water timer must lead powder by ≥ 100ms
+    if (machineType === 'coffee') {
+      const volNorm = normalizeVol(firstItem.vol ?? '');
+      const firstCalib = calibration.find(
+        (c: any) =>
+          c.itemId === firstItem.item_id &&
+          (c.cupSize === firstItem.vol ||
+            normalizeVol(c.cupSize ?? '') === volNorm),
+      );
+      const tw = firstCalib?.timerOfWater ?? 5000;
+      const tp = firstCalib?.timerOfPowder ?? 3000;
+      if (tw < tp + 100) {
+        throw new BadRequestException(
+          `Timer mismatch: timerOfWater (${tw}ms) must be >= timerOfPowder (${tp}ms) + 100ms. Update calibration for machine ${machine_id}.`,
+        );
+      }
     }
 
     try {
-      await this.mqttService.dispense(
-        machine_id,
-        firstItem.item_id,
-        firstItem.vol ?? '',
-        firstItem.qty ?? 1,
-        nozzle,
-        firstItem.item_name,
-        timerOfWater,
-        timerOfPowder,
-        orderId,
-        user.id,
-        machineType,
+      // Publish with same command wrapper the firmware expects
+      // QoS 0 — matches old backend (publishMachineCommand default)
+      await this.mqttService.publish(
+        `machine/order/${machine_id}`,
+        {
+          command: {
+            ord_id: orderId,
+            user: user.id, // Send original CUS-... ID so machine can display it
+            ord: ordStr,
+            status: 'pending',
+          },
+        },
+        { qos: 0 },
+      );
+      this.logger.log(
+        `[Order] MQTT command sent → machine/order/${machine_id} | orderId=${orderId}`,
       );
     } catch (mqttErr) {
       this.logger.error(
@@ -711,21 +831,26 @@ export class OrdersService {
       order.status = 'failed';
       order.failureReason = 'Machine communication error';
       await order.save();
-      await this.walletService.refund(user.id, amount, orderId);
+      await this.walletService.refund(effectiveUserId, amount, orderId);
       throw new ServiceUnavailableException(
         'Machine is not reachable. Payment has been refunded.',
       );
     }
 
     this.logger.log(
-      `Legacy order ${orderId} placed on machine ${machine_id} for user ${user.id}`,
+      `[Order] ✓ Legacy order complete: ${orderId} | machine=${machine_id} | user=${user.id} | ${machineType} machine`,
     );
 
     return {
       success: true,
       message: 'Order created successfully, wallet updated',
       data: order,
-      wallet_info: { deducted: amount, currency },
+      wallet_info: {
+        previous_balance: (tx as any).balanceBefore,
+        new_balance: (tx as any).balanceAfter,
+        deducted_amount: amount,
+        currency,
+      },
     };
   }
 }

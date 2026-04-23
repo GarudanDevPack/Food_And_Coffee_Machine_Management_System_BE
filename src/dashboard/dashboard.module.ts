@@ -7,6 +7,10 @@ import {
   TransactionSchema,
 } from '../wallet/schemas/transaction.schema';
 import { Alert, AlertSchema } from '../alerts/schemas/alert.schema';
+import {
+  UserSchema,
+  UserSchemaClass,
+} from '../users/infrastructure/persistence/document/entities/user.schema';
 import { DashboardService } from './dashboard.service';
 import { DashboardController } from './dashboard.controller';
 
@@ -17,6 +21,7 @@ import { DashboardController } from './dashboard.controller';
       { name: Machine.name, schema: MachineSchema },
       { name: Transaction.name, schema: TransactionSchema },
       { name: Alert.name, schema: AlertSchema },
+      { name: UserSchemaClass.name, schema: UserSchema },
     ]),
   ],
   controllers: [DashboardController],

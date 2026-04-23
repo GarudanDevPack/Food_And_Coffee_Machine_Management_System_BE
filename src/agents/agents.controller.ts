@@ -115,6 +115,29 @@ export class AgentsController {
   }
 
   /**
+   * GET /agents/orders/mobile?status=...
+   * Returns orders in the mobile app format, enriched with customer data.
+   *
+   * Response fields per order:
+   *   id, customerId, customerName, items[], quantity, amount, status,
+   *   deliveryType, address, timestamp, phoneNumber, specialInstructions
+   */
+  @Get('orders/mobile')
+  @ApiOperation({ summary: 'Get orders formatted for the agent mobile app' })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    description:
+      'Filter by order status (pending | dispensing | completed | failed)',
+  })
+  @ApiOkResponse({
+    description: 'Orders in mobile-app format with customer details',
+  })
+  getMobileOrders(@Request() req, @Query('status') status?: string) {
+    return this.agentsService.getMobileOrders(req.user.id, status);
+  }
+
+  /**
    * PATCH /agents/orders/:id/complete
    * Marks an order as completed.
    * Throws 403 if the machine is not assigned to this agent.
@@ -191,7 +214,47 @@ export class AgentsController {
     return this.agentsService.subscribeCustomer(req.user.id, targetUserId, dto);
   }
 
-  // ─── Wallet Top-Up ───────────────────────────────────────────────────────────
+  // ─── Wallet ───────────────────────────────────────────────────────────────────
+
+  /**
+   * GET /agents/transactions
+   * Returns enriched transactions processed by this agent (agent_topup where referenceId=agentId).
+   * Same response format as GET /wallet/transactions.
+   */
+  @Get('transactions')
+  @ApiOperation({
+    summary: 'Get enriched transactions processed by this agent',
+  })
+  @ApiQuery({ name: 'limit', required: false, example: 100 })
+  @ApiQuery({ name: 'skip', required: false, example: 0 })
+  @ApiQuery({
+    name: 'category',
+    required: false,
+    enum: [
+      'topup_qr',
+      'topup_bank',
+      'agent_topup',
+      'order_payment',
+      'refund',
+      'adjustment',
+    ],
+  })
+  @ApiOkResponse({
+    description: 'Enriched transaction list with customer and agent info',
+  })
+  getTransactions(
+    @Request() req,
+    @Query('limit') limit?: string,
+    @Query('skip') skip?: string,
+    @Query('category') category?: string,
+  ) {
+    return this.agentsService.getTransactions(
+      req.user.id,
+      limit ? parseInt(limit) : 100,
+      skip ? parseInt(skip) : 0,
+      category,
+    );
+  }
 
   /**
    * POST /agents/wallet-topup
@@ -208,6 +271,33 @@ export class AgentsController {
   @HttpCode(HttpStatus.CREATED)
   walletTopup(@Request() req, @Body() dto: AgentTopupDto) {
     return this.agentsService.walletTopup(req.user.id, dto);
+  }
+
+  // ─── Inspection ──────────────────────────────────────────────────────────────
+
+  /**
+   * POST /agents/inspection
+   * Files a machine inspection report.
+   * Creates a maintenance_required alert if issues were found,
+   * and always logs an inspection_filed activity entry.
+   *
+   * Body: { machineId, passed, failedChecks, notes, severity }
+   */
+  @Post('inspection')
+  @ApiOperation({ summary: 'File a machine inspection report' })
+  @ApiCreatedResponse({
+    description: 'Inspection filed; alert created if issues found',
+  })
+  @HttpCode(HttpStatus.CREATED)
+  fileInspection(@Request() req, @Body() body: any) {
+    return this.agentsService.fileInspection(
+      req.user.id,
+      body.machineId,
+      body.passed ?? true,
+      body.failedChecks ?? [],
+      body.notes ?? '',
+      body.severity ?? 'medium',
+    );
   }
 
   // ─── Activity Log ─────────────────────────────────────────────────────────────

@@ -12,6 +12,10 @@ import {
   TopupRequest,
   TopupRequestDocument,
 } from './schemas/topup-request.schema';
+import {
+  UserSchemaClass,
+  UserSchemaDocument,
+} from '../users/infrastructure/persistence/document/entities/user.schema';
 import { TopupDto } from './dto/topup.dto';
 import { SubmitTopupRequestDto } from './dto/submit-topup-request.dto';
 import { ReviewTopupRequestDto } from './dto/review-topup-request.dto';
@@ -27,6 +31,8 @@ export class WalletService {
     private readonly txModel: Model<TransactionDocument>,
     @InjectModel(TopupRequest.name)
     private readonly topupRequestModel: Model<TopupRequestDocument>,
+    @InjectModel(UserSchemaClass.name)
+    private readonly userModel: Model<UserSchemaDocument>,
   ) {}
 
   async createWallet(userId: string): Promise<Wallet> {
@@ -185,6 +191,96 @@ export class WalletService {
       .skip(skip)
       .limit(limit)
       .exec();
+  }
+
+  /**
+   * Admin: get all transactions across all users, enriched with customer and
+   * agent information, returned in the mobile-friendly format expected by the
+   * admin wallet report page.
+   */
+  async getAllTransactionsEnriched(
+    limit = 100,
+    skip = 0,
+    userId?: string,
+    category?: string,
+    agentId?: string,
+  ): Promise<object[]> {
+    const filter: Record<string, any> = {};
+    if (userId) filter.userId = userId;
+    if (category) filter.category = category;
+    // When called from agent context: only return transactions where this agent
+    // processed the top-up (referenceId = agentId) OR any category if not filtering
+    if (agentId) filter.referenceId = agentId;
+
+    const txs = await this.txModel
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean()
+      .exec();
+
+    if (txs.length === 0) return [];
+
+    // Batch-fetch all involved users (customers + agents referenced in agentTopup)
+    const userIds = [...new Set(txs.map((t) => t.userId))];
+    const agentIds = [
+      ...new Set(
+        txs
+          .filter((t) => t.category === 'agent_topup' && t.referenceId)
+          .map((t) => t.referenceId!),
+      ),
+    ];
+    const allIds = [...new Set([...userIds, ...agentIds])];
+
+    const users = await this.userModel
+      .find({ _id: { $in: allIds } })
+      .lean()
+      .exec();
+
+    const userMap = new Map(users.map((u) => [u._id.toString(), u]));
+
+    const paymentMethodMap: Record<string, string> = {
+      topup_qr: 'QR Code',
+      topup_bank: 'Bank Transfer',
+      agent_topup: 'Cash (Agent)',
+      order_payment: 'Wallet',
+      refund: 'Refund',
+      adjustment: 'Adjustment',
+    };
+
+    return txs.map((tx) => {
+      const customer = userMap.get(tx.userId);
+      const customerName = customer
+        ? `${customer.firstName ?? ''} ${customer.lastName ?? ''}`.trim()
+        : 'Unknown';
+
+      let processedBy = 'System';
+      if (tx.category === 'agent_topup' && tx.referenceId) {
+        const agent = userMap.get(tx.referenceId);
+        if (agent) {
+          processedBy =
+            `${agent.firstName ?? ''} ${agent.lastName ?? ''}`.trim() ||
+            'Agent';
+        }
+      }
+
+      return {
+        id: (tx._id as any).toString(),
+        customerId: customer?.customerId ?? tx.userId,
+        customerName,
+        customerPhone: customer?.phone ?? null,
+        amount: tx.amount,
+        date: tx.createdAt,
+        paymentMethod: paymentMethodMap[tx.category] ?? tx.category,
+        status: tx.status.charAt(0).toUpperCase() + tx.status.slice(1),
+        reference: tx.referenceId ?? null,
+        notes: tx.description ?? null,
+        processedBy,
+        createdAt: tx.createdAt,
+        updatedAt: tx.updatedAt,
+      };
+    });
   }
 
   /**

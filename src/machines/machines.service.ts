@@ -26,6 +26,7 @@ import {
   UpdateCalibrationDto,
 } from './dto/update-machine.dto';
 import { LoadBatchDto } from './dto/load-batch.dto';
+import { EventsGateway } from '../events/events.gateway';
 
 @Injectable()
 export class MachinesService implements OnModuleInit {
@@ -40,13 +41,25 @@ export class MachinesService implements OnModuleInit {
     private readonly walletService: WalletService,
     private readonly alertsService: AlertsService,
     private readonly notificationsService: NotificationsService,
+    private readonly eventsGateway: EventsGateway,
   ) {}
 
   /**
    * Register MQTT callbacks once the module is fully initialised.
    * This wires live machine status and order status updates from hardware.
    */
-  onModuleInit(): void {
+  async onModuleInit(): Promise<void> {
+    // Clear any stuck flushMode flags left over from a crashed/restarted process
+    const stuck = await this.machineModel.updateMany(
+      { flushMode: true },
+      { $set: { flushMode: false } },
+    );
+    if (stuck.modifiedCount > 0) {
+      this.logger.warn(
+        `Reset flushMode=true on ${stuck.modifiedCount} machine(s) left over from previous process`,
+      );
+    }
+
     this.mqttService.onMachineStatusUpdate((payload) =>
       this.handleMachineStatusUpdate(payload),
     );
@@ -66,22 +79,81 @@ export class MachinesService implements OnModuleInit {
     payload: MachineStatusPayload,
   ): Promise<void> {
     try {
+      // Detect sleep acknowledgement from firmware:
+      // Machine sends { status:"offline", error:"Sleep_Mode_ON" } when it enters sleep.
+      // This is NOT a real offline — treat it as a sleep state change.
+      const isSleepAck = payload.error === 'Sleep_Mode_ON';
+
       const update: Record<string, any> = {
-        isOnline: payload.status !== 'offline',
+        // Machine is online if status is not offline, OR if this is a sleep ack
+        // (sleeping machine is intentionally "offline" on MQTT but still operational)
+        isOnline: isSleepAck ? false : payload.status !== 'offline',
         lastSeen: new Date(),
       };
-      if (payload.error !== undefined) update.error = payload.error;
-      if (payload.sensor) update.sensor = payload.sensor;
+
+      if (isSleepAck) {
+        // Firmware confirmed sleep mode — mark DB accordingly
+        update.sleepMode = true;
+        update.error = 'Sleep_Mode_ON';
+        this.logger.log(`Machine ${payload.machine_id} confirmed sleep mode`);
+      } else {
+        if (payload.error !== undefined) update.error = payload.error;
+        if (payload.status === 'online') {
+          // Clear the retained wake message only on the transition from offline → online.
+          // We check isOnline (not sleepMode) because setSleepMode(false) already clears
+          // sleepMode in DB before the machine sends its first heartbeat — so sleepMode
+          // would always be false here and the old check never fired.
+          const existing = await this.machineModel
+            .findOne({ machineId: payload.machine_id }, { isOnline: 1 })
+            .lean()
+            .exec();
+          if (existing && (existing as any).isOnline === false) {
+            this.mqttService.clearRetainedWake(payload.machine_id);
+            this.logger.log(
+              `Machine ${payload.machine_id} came online — cleared retained wake message`,
+            );
+          }
+          update.sleepMode = false;
+        }
+      }
+
+      if (payload.sensor) {
+        // Firmware sends RAW sensor pin state:
+        //   "LOW"  = pin pulled LOW by water = boiler HAS water → "present"
+        //   "HIGH" = pin floating (no water)  = boiler EMPTY    → "empty"
+        //   "Non"  = sensor not reading (machine in sleep)       → "unknown"
+        const rawWater = payload.sensor.water;
+        const normalisedWater =
+          rawWater === 'LOW'
+            ? 'present'
+            : rawWater === 'HIGH'
+              ? 'empty'
+              : rawWater === 'Non'
+                ? 'unknown'
+                : rawWater;
+        update.sensor = { ...payload.sensor, water: normalisedWater };
+      }
 
       await this.machineModel.updateOne(
         { machineId: payload.machine_id },
         { $set: update },
       );
       this.logger.debug(
-        `Machine ${payload.machine_id} status → ${payload.status ?? 'update'}`,
+        `Machine ${payload.machine_id} status → ${payload.status ?? 'update'}${isSleepAck ? ' (sleep ack)' : ''}`,
       );
 
-      if (payload.status === 'offline') {
+      // Push live status to all connected browser clients
+      this.eventsGateway.emitMachineStatus({
+        machineId: payload.machine_id,
+        isOnline: update.isOnline,
+        sleepMode: update.sleepMode,
+        flushMode: update.flushMode,
+        error: update.error,
+        sensor: update.sensor,
+      });
+
+      // Fire offline alert only for real disconnects — not for sleep acknowledgements
+      if (payload.status === 'offline' && !isSleepAck) {
         const alertMsg = `Machine ${payload.machine_id} went offline`;
         await this.alertsService.create({
           machineId: payload.machine_id,
@@ -142,6 +214,21 @@ export class MachinesService implements OnModuleInit {
     payload: OrderStatusPayload,
   ): Promise<void> {
     try {
+      // ── Step 1: processing → mark dispensing ──────────────────────
+      if (payload.status === 'processing') {
+        await this.orderModel.updateOne(
+          { orderId: payload.id },
+          { $set: { status: 'dispensing' } },
+        );
+        this.logger.debug(`Order ${payload.id} → dispensing`);
+        this.eventsGateway.emitOrderStatus({
+          orderId: payload.id,
+          status: 'dispensing',
+        });
+        return;
+      }
+
+      // ── Step 2: Find order ─────────────────────────────────────────
       const order = await this.orderModel
         .findOne({ orderId: payload.id })
         .exec();
@@ -152,29 +239,152 @@ export class MachinesService implements OnModuleInit {
         return;
       }
 
+      // ── Step 3: Parse ord string → deduct inventory stock ──────────
+      const machine = await this.machineModel
+        .findOne({ machineId: order.machineId })
+        .exec();
+      const isFoodMachine = (machine as any)?.machineType === 'food';
+      let totalDispensed = 0;
+
+      if (
+        payload.ord &&
+        (payload.status === 'completed' || payload.status === 'cancelled')
+      ) {
+        if (machine) {
+          const ordList = payload.ord.split(',').filter(Boolean);
+
+          for (const ordStr of ordList) {
+            const parts = ordStr.split('-');
+            const nozzleNum = parseInt(parts[0].replace('N', ''), 10);
+
+            // Format: N1-qty  OR  N1-name-qty-waterTimer-powderTimer
+            const dispensedQty =
+              parts.length === 2
+                ? parseInt(parts[1], 10) || 0
+                : parseInt(parts[2], 10) || 0;
+
+            totalDispensed += dispensedQty;
+
+            if (isNaN(nozzleNum) || dispensedQty === 0) continue;
+
+            if (!isFoodMachine) {
+              // Coffee machine: deduct grams from inventory
+              const invItem = (machine as any).inventory?.find(
+                (inv: any) => inv.nozzle === nozzleNum,
+              );
+              if (!invItem) continue;
+
+              const gramsPerCup =
+                invItem.gramsPerCup > 0 ? invItem.gramsPerCup : 18;
+              const gramsConsumed = dispensedQty * gramsPerCup;
+              const newStock = Math.max(
+                0,
+                invItem.currentStock - gramsConsumed,
+              );
+              const newCupcount = Math.floor(newStock / gramsPerCup);
+
+              await this.machineModel.updateOne(
+                { machineId: order.machineId, 'inventory.nozzle': nozzleNum },
+                {
+                  $inc: { 'inventory.$.currentStock': -gramsConsumed },
+                  $set: { 'inventory.$.cupcount': newCupcount },
+                },
+              );
+
+              this.logger.log(
+                `[Order] Nozzle ${nozzleNum}: dispensed=${dispensedQty} grams=${gramsConsumed} ` +
+                  `stock=${newStock}g cups_left=${newCupcount}`,
+              );
+
+              // Low stock alert check
+              if (newStock <= invItem.minStock) {
+                await this.alertsService.createLowStockAlert(
+                  order.machineId,
+                  invItem.itemId,
+                  newStock,
+                );
+              }
+            }
+          }
+        }
+      }
+
+      // ── Step 4: Determine final order status ───────────────────────
+      const orderedQty = order.quantity ?? 1;
+      let finalStatus: string;
+
       if (payload.status === 'completed') {
+        finalStatus = 'completed';
+      } else if (payload.status === 'cancelled') {
+        if (totalDispensed === 0) {
+          finalStatus = 'cancelled';
+        } else if (totalDispensed < orderedQty) {
+          finalStatus = 'half-completed';
+        } else {
+          finalStatus = 'completed'; // all dispensed despite cancel signal
+        }
+      } else {
+        finalStatus = payload.status; // e.g. processing (already handled above)
+      }
+
+      // ── Step 5: Food machine — restore batch on cancellation ───────
+      // Only restore units that were NOT physically dispensed. For half-completed
+      // orders, totalDispensed units were already consumed by the machine.
+      // Uses restoreBatchStock() so that depleted batches are re-activated when
+      // the restored quantity brings them above 0.
+      if (isFoodMachine && payload.status === 'cancelled') {
+        const undelivered = (order.quantity ?? 1) - totalDispensed;
+        if (undelivered > 0) {
+          await this.restoreBatchStock(
+            order.machineId,
+            order.itemId,
+            undelivered,
+          );
+          this.logger.log(
+            `[Order] Food batch restored: +${undelivered} units for ${order.itemId} on ${order.machineId} (ordered=${order.quantity}, dispensed=${totalDispensed})`,
+          );
+        }
+      }
+
+      // ── Step 6: Persist final status + refund if needed ───────────
+      if (finalStatus === 'completed') {
         order.status = 'completed';
         await order.save();
-        this.logger.log(`Order ${payload.id} marked completed via MQTT`);
-      } else if (payload.status === 'cancelled') {
-        // Refund wallet if payment was deducted
-        if (order.status === 'dispensing') {
+        this.logger.log(`[Order] ${payload.id} completed via MQTT`);
+        this.eventsGateway.emitOrderStatus({
+          orderId: payload.id,
+          machineId: order.machineId,
+          status: 'completed',
+        });
+      } else if (
+        finalStatus === 'cancelled' ||
+        finalStatus === 'half-completed'
+      ) {
+        order.status =
+          finalStatus === 'half-completed' ? 'half-completed' : 'failed';
+        order.failureReason =
+          finalStatus === 'half-completed'
+            ? `Partially dispensed: ${totalDispensed} of ${orderedQty}`
+            : 'Machine cancelled the order';
+        await order.save();
+
+        if (order.status !== 'completed') {
           await this.walletService.refund(
             order.userId,
             order.totalAmount,
             order._id.toString(),
           );
           this.logger.log(
-            `Refunded ${order.totalAmount} LKR to user ${order.userId} for cancelled order ${payload.id}`,
+            `[Order] Refunded ${order.totalAmount} LKR → user ${order.userId} (${finalStatus})`,
           );
         }
-        order.status = 'failed';
-        order.failureReason = 'Machine cancelled the order';
-        await order.save();
-      } else {
-        this.logger.debug(
-          `Order ${payload.id} status: ${payload.status} (no DB action)`,
-        );
+
+        this.eventsGateway.emitOrderStatus({
+          orderId: payload.id,
+          machineId: order.machineId,
+          status: order.status,
+          failureReason: order.failureReason,
+        });
       }
     } catch (err) {
       this.logger.error(
@@ -230,6 +440,24 @@ export class MachinesService implements OnModuleInit {
       .lean()
       .exec();
     if (!machine) throw new NotFoundException(`Machine ${id} not found`);
+
+    // Admin panel sends { flush_mode: true } via PATCH — intercept and send MQTT flush
+    if ((dto as any).flush_mode === true) {
+      const mid = (machine as any).machineId as string;
+      try {
+        const result = await this.triggerManualFlush(mid, 'daily');
+        return {
+          ...machine,
+          _flushResult: result.message,
+          _flushError: null,
+        } as any;
+      } catch (err) {
+        const msg = (err as Error).message;
+        this.logger.warn(`Flush blocked for machine ${mid}: ${msg}`);
+        return { ...machine, _flushResult: null, _flushError: msg } as any;
+      }
+    }
+
     return machine;
   }
 
@@ -246,17 +474,27 @@ export class MachinesService implements OnModuleInit {
     if (!machine) throw new NotFoundException(`Machine ${machineId} not found`);
 
     const idx = machine.inventory.findIndex((i) => i.itemId === dto.itemId);
+    const gramsPerCup =
+      dto.gramsPerCup ??
+      (idx >= 0 ? machine.inventory[idx].gramsPerCup : 18) ??
+      18;
+    const cupcount = Math.floor(dto.currentStock / (gramsPerCup || 18));
+
     if (idx >= 0) {
       machine.inventory[idx].currentStock = dto.currentStock;
+      machine.inventory[idx].cupcount = cupcount;
       if (dto.minStock !== undefined)
         machine.inventory[idx].minStock = dto.minStock;
+      if (dto.gramsPerCup !== undefined)
+        machine.inventory[idx].gramsPerCup = dto.gramsPerCup;
     } else {
       machine.inventory.push({
         itemId: dto.itemId,
         currentStock: dto.currentStock,
+        cupcount,
         minStock: dto.minStock ?? 5,
         nozzle: dto.nozzle ?? 1,
-        gramsPerCup: dto.gramsPerCup ?? 18,
+        gramsPerCup,
       });
     }
     return (await machine.save()).toObject();
@@ -313,12 +551,49 @@ export class MachinesService implements OnModuleInit {
     machineId: string,
     type: 'daily' | 'weekly',
   ): Promise<{ message: string }> {
-    await this.findByMachineId(machineId);
-    this.mqttService.flush(machineId, type);
-    this.logger.log(
-      `Manual flush triggered for machine ${machineId} (${type})`,
+    // Support both MongoDB _id and machineId field
+    const machine = await this.machineModel
+      .findOne({
+        $or: [
+          { machineId },
+          ...(machineId.length === 24 ? [{ _id: machineId }] : []),
+        ],
+      })
+      .lean()
+      .exec();
+    if (!machine) throw new NotFoundException(`Machine ${machineId} not found`);
+    if ((machine as any).sleepMode === true) {
+      throw new BadRequestException(
+        'Cannot flush: machine is in sleep mode. Wake it first.',
+      );
+    }
+    if (!(machine as any).isOnline) {
+      throw new BadRequestException(
+        'Cannot flush: machine is offline. Wait for it to come online first.',
+      );
+    }
+    // Always use the machineId field for MQTT topic and DB queries
+    const mid = (machine as any).machineId as string;
+
+    // Mark flush mode active in DB (mirrors old backend flush tracking)
+    await this.machineModel.updateOne(
+      { machineId: mid },
+      { $set: { flushMode: true } },
     );
-    return { message: `Flush command sent to machine ${machineId}` };
+
+    await this.mqttService.flush(mid);
+    this.logger.log(`Manual flush triggered for machine ${mid} (${type})`);
+
+    // Auto-reset flushMode after 30 seconds (old backend behaviour)
+    setTimeout(async () => {
+      await this.machineModel.updateOne(
+        { machineId: mid },
+        { $set: { flushMode: false } },
+      );
+      this.logger.log(`Flush completed for machine ${mid}`);
+    }, 30_000);
+
+    return { message: `Flush command sent to machine ${mid}` };
   }
 
   // Auto-flush daily at 2:00 AM Asia/Colombo
@@ -326,25 +601,86 @@ export class MachinesService implements OnModuleInit {
   async dailyFlush(): Promise<void> {
     this.logger.log('Running daily flush for all active machines...');
     const machines = await this.machineModel
-      .find({ status: 'active', autoFlushEnabled: true })
+      .find({ status: 'active', machineType: 'coffee', isOnline: true })
       .select('machineId')
       .exec();
     const ids = machines.map((m) => m.machineId);
-    this.mqttService.flushAll(ids, 'daily');
-    this.logger.log(`Daily flush sent to ${ids.length} machines`);
+    if (ids.length === 0) {
+      this.logger.log('Daily flush: no online coffee machines found');
+      return;
+    }
+    this.mqttService.flushAll(ids);
+    this.logger.log(
+      `Daily flush sent to ${ids.length} machines: ${ids.join(', ')}`,
+    );
   }
 
   // Auto-flush weekly every Sunday at 3:00 AM Asia/Colombo
-  @Cron('0 3 * * 0', { timeZone: 'Asia/Colombo' })
+  @Cron('0 21 * * 0', { timeZone: 'Asia/Colombo' })
   async weeklyFlush(): Promise<void> {
     this.logger.log('Running weekly flush for all active machines...');
     const machines = await this.machineModel
-      .find({ status: 'active', autoFlushEnabled: true })
+      .find({ status: 'active', machineType: 'coffee', isOnline: true })
       .select('machineId')
       .exec();
     const ids = machines.map((m) => m.machineId);
-    this.mqttService.flushAll(ids, 'weekly');
-    this.logger.log(`Weekly flush sent to ${ids.length} machines`);
+    if (ids.length === 0) {
+      this.logger.log('Weekly flush: no online coffee machines found');
+      return;
+    }
+    this.mqttService.flushAll(ids);
+    this.logger.log(
+      `Weekly flush sent to ${ids.length} machines: ${ids.join(', ')}`,
+    );
+  }
+
+  /**
+   * Auto-cancel orders stuck in pending/dispensing for more than 3 minutes.
+   * Runs every minute. Refunds wallet and restores food-machine batch stock.
+   */
+  @Cron('* * * * *')
+  async cancelTimedOutOrders(): Promise<void> {
+    const cutoff = new Date(Date.now() - 3 * 60 * 1000);
+    const stuckOrders = await this.orderModel
+      .find({
+        status: { $in: ['pending', 'dispensing'] },
+        createdAt: { $lt: cutoff },
+      })
+      .exec();
+
+    for (const order of stuckOrders) {
+      order.status = 'failed';
+      order.failureReason = 'Order timed out — machine did not confirm';
+      await order.save();
+
+      await this.walletService.refund(
+        order.userId,
+        order.totalAmount,
+        order._id.toString(),
+      );
+
+      const machine = await this.machineModel
+        .findOne({ machineId: order.machineId })
+        .exec();
+      if ((machine as any)?.machineType === 'food') {
+        // Use restoreBatchStock so depleted batches are re-activated when
+        // restored quantity brings them above 0.
+        await this.restoreBatchStock(
+          order.machineId,
+          order.itemId,
+          order.quantity,
+        );
+      }
+
+      this.logger.warn(
+        `[Timeout] Auto-cancelled order ${order.orderId} — refunded ${order.totalAmount} LKR to user ${order.userId}`,
+      );
+      this.eventsGateway.emitOrderStatus({
+        orderId: order.orderId ?? order._id.toString(),
+        status: 'failed',
+        failureReason: 'timeout',
+      });
+    }
   }
 
   async deductStock(
@@ -352,15 +688,28 @@ export class MachinesService implements OnModuleInit {
     itemId: string,
     quantity: number,
   ): Promise<void> {
+    // Resolve gramsPerCup so we deduct grams (not cups) from currentStock
+    const machine = await this.machineModel.findOne({ machineId }).exec();
+    const inv = (machine as any)?.inventory?.find(
+      (i: any) => i.itemId === itemId,
+    );
+    const gramsPerCup = inv?.gramsPerCup > 0 ? inv.gramsPerCup : 18;
+    const gramsToDeduct = quantity * gramsPerCup;
+    const newStock = Math.max(0, (inv?.currentStock ?? 0) - gramsToDeduct);
+    const newCupcount = Math.floor(newStock / gramsPerCup);
+
     // Atomic deduction — the $gte filter prevents negative stock under concurrent orders
     const updated = await this.machineModel
       .findOneAndUpdate(
         {
           machineId,
           'inventory.itemId': itemId,
-          'inventory.currentStock': { $gte: quantity },
+          'inventory.currentStock': { $gte: gramsToDeduct },
         },
-        { $inc: { 'inventory.$.currentStock': -quantity } },
+        {
+          $inc: { 'inventory.$.currentStock': -gramsToDeduct },
+          $set: { 'inventory.$.cupcount': newCupcount },
+        },
         { new: true },
       )
       .exec();
@@ -372,23 +721,20 @@ export class MachinesService implements OnModuleInit {
     }
 
     // Check if stock dropped to or below minStock and fire alert if so
-    const machine = updated;
-    if (machine) {
-      const inv = machine.inventory.find((i) => i.itemId === itemId);
-      if (inv && inv.currentStock <= inv.minStock) {
-        const alert = await this.alertsService.createLowStockAlert(
-          machineId,
-          itemId,
-          inv.currentStock,
-        );
-        await this.notificationsService.create(
-          'system',
-          'Low Stock Alert',
-          alert.message,
-          'alert',
-          machineId,
-        );
-      }
+    const updatedInv = updated.inventory.find((i) => i.itemId === itemId);
+    if (updatedInv && updatedInv.currentStock <= updatedInv.minStock) {
+      const alert = await this.alertsService.createLowStockAlert(
+        machineId,
+        itemId,
+        updatedInv.currentStock,
+      );
+      await this.notificationsService.create(
+        'system',
+        'Low Stock Alert',
+        alert.message,
+        'alert',
+        machineId,
+      );
     }
   }
 
@@ -584,30 +930,93 @@ export class MachinesService implements OnModuleInit {
     return { nozzleId: batch.nozzleId };
   }
 
+  /**
+   * Restore batch stock — used to roll back a deductBatchStock when an order fails
+   * before MQTT confirmation (e.g. timer validation error, outer catch refund path),
+   * or when the machine cancels/times-out after batch was pre-deducted.
+   *
+   * Two-step update:
+   *   1. Increment quantity back
+   *   2. Re-activate any depleted batch that now has qty > 0
+   *      (deductBatchStock marks batches 'depleted' when qty hits 0; without this
+   *       step the restored units would be permanently invisible to future orders
+   *       because both the stock check and deductBatchStock only find 'active' batches)
+   */
+  async restoreBatchStock(
+    machineId: string,
+    itemId: string,
+    quantity: number,
+  ): Promise<void> {
+    // Step 1: increment quantity
+    await this.machineModel.updateOne(
+      {
+        machineId,
+        'batches.itemId': itemId,
+        'batches.status': { $in: ['active', 'depleted'] },
+      },
+      { $inc: { 'batches.$.quantity': quantity } },
+    );
+    // Step 2: re-activate any depleted batch that now has quantity > 0
+    await this.machineModel.updateOne(
+      {
+        machineId,
+        'batches.itemId': itemId,
+        'batches.status': 'depleted',
+        'batches.quantity': { $gt: 0 },
+      },
+      { $set: { 'batches.$.status': 'active' } },
+    );
+    this.logger.log(
+      `[Batch] Restored +${quantity} units of ${itemId} on ${machineId} (order rollback)`,
+    );
+  }
+
   // ─── Sleep Mode ──────────────────────────────────────────────────────────────
 
   /**
    * Put a machine into sleep mode or wake it.
    * Sends MQTT command to machine/log/{machineId} matching old backend format.
    */
-  async setSleepMode(machineId: string, sleep: boolean): Promise<Machine> {
+  async setSleepMode(id: string, sleep: boolean): Promise<Machine> {
+    // id may be MongoDB _id (from admin panel) or machineId field — support both
+    // When waking (sleep: false), clear the stale Sleep_Mode_ON error so the DB
+    // reflects "waking" state rather than "sleeping" state until the machine sends
+    // its first READY_STATE heartbeat.
+    const setFields: Record<string, any> = { sleepMode: sleep };
+    if (!sleep) setFields.error = null;
+
     const machine = await this.machineModel
       .findOneAndUpdate(
-        { machineId },
-        { $set: { sleepMode: sleep } },
+        {
+          $or: [{ machineId: id }, ...(id.length === 24 ? [{ _id: id }] : [])],
+        },
+        { $set: setFields },
         { new: true },
       )
       .lean()
       .exec();
-    if (!machine) throw new NotFoundException(`Machine ${machineId} not found`);
+    if (!machine) throw new NotFoundException(`Machine ${id} not found`);
 
+    // Always use the machine's machineId field for the MQTT topic (e.g., "MCH-001")
+    const mid = (machine as any).machineId as string;
     if (sleep) {
-      this.mqttService.sleep(machineId);
+      this.mqttService.sleep(mid);
     } else {
-      this.mqttService.wake(machineId);
+      this.mqttService.wake(mid);
     }
-    this.logger.log(`Machine ${machineId} sleep mode → ${sleep}`);
+    this.logger.log(`Machine ${mid} sleep mode → ${sleep}`);
     return machine;
+  }
+
+  /**
+   * Mark machine online or offline (called from legacy admin panel route).
+   * Supports both MongoDB _id and machineId field.
+   */
+  async setOnlineStatus(id: string, isOnline: boolean): Promise<void> {
+    await this.machineModel.updateOne(
+      { $or: [{ machineId: id }, ...(id.length === 24 ? [{ _id: id }] : [])] },
+      { $set: { isOnline } },
+    );
   }
 
   // ─── Item Assignment ─────────────────────────────────────────────────────────
@@ -769,37 +1178,25 @@ export class MachinesService implements OnModuleInit {
   }
 
   /**
-   * Runs every 30 seconds.
-   * Any order still in 'pending' or 'dispensing' state after 30 seconds is
-   * automatically cancelled and the wallet is refunded.
+   * Every 10 seconds — mirrors old backend timer.js offlineMachineWhenNotConnected().
+   * If a machine has not sent an MQTT heartbeat in the last 10 seconds, mark it offline.
    */
-  @Cron('*/30 * * * * *')
-  async cancelTimedOutOrders(): Promise<void> {
-    const cutoff = new Date(Date.now() - 30_000);
-
-    const stuckOrders = await this.orderModel
-      .find({
-        status: { $in: ['pending', 'dispensing'] },
-        createdAt: { $lt: cutoff },
-      })
-      .exec();
-
-    for (const order of stuckOrders) {
-      order.status = 'cancelled';
-      order.failureReason =
-        'Order timed out — no response from machine within 30 seconds';
-      await order.save();
-
-      await this.walletService
-        .refund(order.userId, order.totalAmount, order._id.toString())
-        .catch((err) =>
-          this.logger.error(
-            `Refund failed for timed-out order ${order.orderId}: ${(err as Error).message}`,
-          ),
-        );
-
+  @Cron('*/10 * * * * *')
+  async markOfflineSilentMachines(): Promise<void> {
+    const cutoff = new Date(Date.now() - 10_000);
+    // Exclude machines in sleep mode or flush mode — both stop heartbeats intentionally
+    const result = await this.machineModel.updateMany(
+      {
+        isOnline: true,
+        sleepMode: { $ne: true },
+        flushMode: { $ne: true },
+        lastSeen: { $lt: cutoff },
+      },
+      { $set: { isOnline: false, error: 'MACHINE_NOT_CONNECTED' } },
+    );
+    if (result.modifiedCount > 0) {
       this.logger.warn(
-        `Order ${order.orderId} auto-cancelled after 30s timeout on machine ${order.machineId}`,
+        `Marked ${result.modifiedCount} machine(s) offline (no MQTT heartbeat > 10s)`,
       );
     }
   }

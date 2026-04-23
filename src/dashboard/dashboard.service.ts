@@ -8,6 +8,10 @@ import {
   TransactionDocument,
 } from '../wallet/schemas/transaction.schema';
 import { Alert, AlertDocument } from '../alerts/schemas/alert.schema';
+import {
+  UserSchemaClass,
+  UserSchemaDocument,
+} from '../users/infrastructure/persistence/document/entities/user.schema';
 
 @Injectable()
 export class DashboardService {
@@ -18,10 +22,15 @@ export class DashboardService {
     @InjectModel(Transaction.name)
     private readonly txModel: Model<TransactionDocument>,
     @InjectModel(Alert.name) private readonly alertModel: Model<AlertDocument>,
+    @InjectModel(UserSchemaClass.name)
+    private readonly userModel: Model<UserSchemaDocument>,
   ) {}
 
   async getSummary(clientId?: string) {
     const machineFilter = clientId ? { clientId } : {};
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
 
     const [
       totalMachines,
@@ -30,6 +39,8 @@ export class DashboardService {
       completedOrders,
       revenue,
       unresolvedAlerts,
+      totalCustomers,
+      ordersToday,
     ] = await Promise.all([
       this.machineModel.countDocuments(machineFilter),
       this.machineModel.countDocuments({ ...machineFilter, status: 'active' }),
@@ -40,6 +51,8 @@ export class DashboardService {
         { $group: { _id: null, total: { $sum: '$totalAmount' } } },
       ]),
       this.alertModel.countDocuments({ isResolved: false }),
+      this.userModel.countDocuments({ 'role._id': '5' }),
+      this.orderModel.countDocuments({ createdAt: { $gte: todayStart } }),
     ]);
 
     return {
@@ -49,6 +62,8 @@ export class DashboardService {
       completedOrders,
       totalRevenue: revenue[0]?.total ?? 0,
       unresolvedAlerts,
+      totalCustomers,
+      ordersToday,
     };
   }
 

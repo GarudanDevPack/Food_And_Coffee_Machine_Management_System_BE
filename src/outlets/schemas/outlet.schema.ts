@@ -15,6 +15,13 @@ export class Outlet {
   @Prop({ type: String })
   location?: string;
 
+  /** GPS coordinates picked from map (Sri Lanka default) */
+  @Prop({ type: Number, default: null })
+  latitude?: number;
+
+  @Prop({ type: Number, default: null })
+  longitude?: number;
+
   /** Agent (user id) who owns/manages this outlet */
   @Prop({ type: String, required: true })
   agentId: string;

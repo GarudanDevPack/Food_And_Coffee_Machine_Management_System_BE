@@ -6,6 +6,10 @@ import {
   TopupRequest,
   TopupRequestSchema,
 } from './schemas/topup-request.schema';
+import {
+  UserSchemaClass,
+  UserSchema,
+} from '../users/infrastructure/persistence/document/entities/user.schema';
 import { WalletService } from './wallet.service';
 import { WalletController } from './wallet.controller';
 
@@ -15,6 +19,7 @@ import { WalletController } from './wallet.controller';
       { name: Wallet.name, schema: WalletSchema },
       { name: Transaction.name, schema: TransactionSchema },
       { name: TopupRequest.name, schema: TopupRequestSchema },
+      { name: UserSchemaClass.name, schema: UserSchema },
     ]),
   ],
   controllers: [WalletController],

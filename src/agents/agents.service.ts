@@ -6,6 +6,7 @@ import { OrdersService } from '../orders/orders.service';
 import { WalletService } from '../wallet/wallet.service';
 import { MembershipsService } from '../memberships/memberships.service';
 import { UsersService } from '../users/users.service';
+import { AlertsService } from '../alerts/alerts.service';
 import { RoleEnum } from '../roles/roles.enum';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import { CreateMembershipDto } from '../memberships/dto/create-membership.dto';
@@ -48,6 +49,7 @@ export class AgentsService {
     private readonly walletService: WalletService,
     private readonly membershipsService: MembershipsService,
     private readonly usersService: UsersService,
+    private readonly alertsService: AlertsService,
     @InjectModel(AgentLog.name)
     private readonly agentLogModel: Model<AgentLogDocument>,
   ) {}
@@ -133,6 +135,67 @@ export class AgentsService {
    */
   getOrders(agentId: string, status?: string) {
     return this.ordersService.findAll(undefined, undefined, status, agentId);
+  }
+
+  /**
+   * Returns orders for the agent's machines in the mobile app format.
+   * Enriches each order with the customer's name, phone, address, and customerId
+   * by batch-fetching users in a single call.
+   *
+   * Mobile response shape:
+   *   id, customerId, customerName, items[], quantity, amount, status,
+   *   deliveryType, address, timestamp, phoneNumber, specialInstructions
+   *
+   * @param agentId - MongoDB _id of the calling agent
+   * @param status  - Optional status filter
+   */
+  async getMobileOrders(agentId: string, status?: string) {
+    const orders = (await this.ordersService.findAll(
+      undefined,
+      undefined,
+      status,
+      agentId,
+    )) as any[];
+
+    if (!orders.length) return [];
+
+    // Batch-fetch all unique customers in one call
+    const userIds = [...new Set(orders.map((o) => o.userId).filter(Boolean))];
+    const users = userIds.length
+      ? await this.usersService.findByIds(userIds)
+      : [];
+
+    const userMap = new Map(
+      users.map((u: any) => [u.id ?? u._id?.toString(), u]),
+    );
+
+    return orders.map((order) => {
+      const user = userMap.get(order.userId) as any;
+      const fullName = user
+        ? `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim() ||
+          user.email ||
+          '—'
+        : '—';
+
+      return {
+        id: order.orderId
+          ? `#${order.orderId}`
+          : `#${order._id?.toString().slice(-6).toUpperCase()}`,
+        customerId: user?.customerId ?? order.userId,
+        customerName: fullName,
+        items: [order.itemName ?? order.itemId],
+        quantity: order.quantity,
+        amount: order.totalAmount,
+        status: order.status
+          ? order.status.charAt(0).toUpperCase() + order.status.slice(1)
+          : 'Pending',
+        deliveryType: order.deliveryType ?? 'auto',
+        address: order.deliveryAddress ?? user?.address ?? null,
+        timestamp: order.createdAt,
+        phoneNumber: user?.phone ?? null,
+        specialInstructions: order.specialInstructions ?? null,
+      };
+    });
   }
 
   /**
@@ -229,6 +292,29 @@ export class AgentsService {
    * @throws NotFoundException if the target customer's wallet does not exist
    * @throws BadRequestException if amount is <= 0
    */
+  /**
+   * GET /agents/transactions
+   * Returns enriched transactions for customers topped-up by this agent
+   * (i.e. agent_topup transactions where referenceId = agentId), plus all
+   * order_payment and refund transactions for this agent's assigned machines.
+   *
+   * Response format matches the admin wallet transactions endpoint.
+   */
+  async getTransactions(
+    agentId: string,
+    limit = 100,
+    skip = 0,
+    category?: string,
+  ) {
+    return this.walletService.getAllTransactionsEnriched(
+      limit,
+      skip,
+      undefined,
+      category,
+      agentId,
+    );
+  }
+
   async walletTopup(agentId: string, dto: AgentTopupDto) {
     const result = await this.walletService.agentTopup(
       agentId,
@@ -244,6 +330,56 @@ export class AgentsService {
       { amount: dto.amount, note: dto.note },
     ).catch(() => {});
     return result;
+  }
+
+  // ─── Inspection ───────────────────────────────────────────────────────────────
+
+  /**
+   * Files a machine inspection report.
+   * If any checklist items failed or notes were provided, creates a
+   * maintenance_required alert. Always logs an inspection_filed activity entry.
+   *
+   * @param agentId   - MongoDB _id of the calling agent
+   * @param machineId - Human-readable machine ID (e.g. MCH-001)
+   * @param passed    - Whether all checklist items passed
+   * @param failedChecks - Labels of failed checklist items
+   * @param notes     - Free-text notes from the agent
+   * @param severity  - Alert severity if issues found (low | medium | high | critical)
+   */
+  async fileInspection(
+    agentId: string,
+    machineId: string,
+    passed: boolean,
+    failedChecks: string[],
+    notes: string,
+    severity: string,
+  ): Promise<{ passed: boolean; alertCreated: boolean }> {
+    let alertCreated = false;
+
+    if (!passed || notes.trim()) {
+      const failedStr =
+        failedChecks.length > 0
+          ? `Failed checks: ${failedChecks.join(', ')}. `
+          : '';
+      const noteStr = notes.trim() ? `Notes: ${notes.trim()}` : '';
+      await this.alertsService.create({
+        machineId,
+        type: 'maintenance_required',
+        message: `Inspection report — ${failedStr}${noteStr}`,
+        severity: severity ?? 'medium',
+      });
+      alertCreated = true;
+    }
+
+    await this.logAction(
+      agentId,
+      'inspection_filed',
+      machineId,
+      passed ? 'All checks passed' : `${failedChecks.length} issue(s) reported`,
+      { passed, failedChecks, notes, severity, alertCreated },
+    );
+
+    return { passed, alertCreated };
   }
 
   // ─── Activity Log ─────────────────────────────────────────────────────────────

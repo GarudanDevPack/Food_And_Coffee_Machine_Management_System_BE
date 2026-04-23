@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsArray,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   ArrayMinSize,
@@ -20,6 +21,16 @@ export class CreateOutletDto {
   @IsOptional()
   @IsString()
   location?: string;
+
+  @ApiPropertyOptional({ example: 6.9271 })
+  @IsOptional()
+  @IsNumber()
+  latitude?: number;
+
+  @ApiPropertyOptional({ example: 79.8612 })
+  @IsOptional()
+  @IsNumber()
+  longitude?: number;
 
   @ApiPropertyOptional({ description: 'Client user ID this outlet belongs to' })
   @IsOptional()

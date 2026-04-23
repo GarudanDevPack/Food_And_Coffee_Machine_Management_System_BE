@@ -19,6 +19,7 @@ import { LegacyModule } from './legacy/legacy.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { ReservationsModule } from './reservations/reservations.module';
+import { EventsModule } from './events/events.module';
 import databaseConfig from './database/config/database.config';
 import authConfig from './auth/config/auth.config';
 import appConfig from './config/app.config';
@@ -94,6 +95,7 @@ const infrastructureDatabaseModule = MongooseModule.forRootAsync({
     OrganizationsModule,
     PromotionsModule,
     ReservationsModule,
+    EventsModule,
   ],
 })
 export class AppModule {}
