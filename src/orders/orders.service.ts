@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
   Logger,
+  OnModuleInit,
 } from '@nestjs/common';
 import { RoleEnum } from '../roles/roles.enum';
 import { InjectModel } from '@nestjs/mongoose';
@@ -36,7 +37,7 @@ function generateOrderId(): string {
 }
 
 @Injectable()
-export class OrdersService {
+export class OrdersService implements OnModuleInit {
   private readonly logger = new Logger(OrdersService.name);
 
   constructor(
@@ -50,6 +51,25 @@ export class OrdersService {
     private readonly promotionsService: PromotionsService,
     private readonly usersService: UsersService,
   ) {}
+
+  onModuleInit() {
+    this.mqttService.onOrderStatusUpdate(async (payload) => {
+      try {
+        await this.machineUpdateOrder(
+          payload.id,
+          payload.status,
+          payload.items
+            ? JSON.stringify(payload.items)
+            : undefined,
+        );
+      } catch (e) {
+        this.logger.error(
+          `MQTT order status handler failed for ${payload.id}: ${(e as Error).message}`,
+        );
+      }
+    });
+    this.logger.log('MQTT order-status callback registered');
+  }
 
   /**
    * Place a new order.
@@ -66,6 +86,8 @@ export class OrdersService {
     dto: CreateOrderDto,
   ): Promise<Order> {
     const isAgent = callerRole === RoleEnum.agent;
+    const isAdmin =
+      callerRole === RoleEnum.super_admin || callerRole === RoleEnum.admin;
 
     // Resolve the customer for whom the order is placed
     let effectiveUserId = callerId;
@@ -79,10 +101,14 @@ export class OrdersService {
       }
       effectiveUserId = dto.targetUserId;
       agentId = callerId;
+    } else if (isAdmin && dto.targetUserId) {
+      // Admin optionally places on behalf of a customer
+      effectiveUserId = dto.targetUserId;
     }
 
     // 1. Verify item availability
     const item = await this.itemsService.findOne(dto.itemId);
+    if (!item) throw new NotFoundException(`Item ${dto.itemId} not found`);
     if (!item.isAvailable) {
       throw new BadRequestException('This item is currently not available');
     }
@@ -103,6 +129,11 @@ export class OrdersService {
       // Coffee: cup size selection required
       if (!dto.cupSize) {
         throw new BadRequestException('Cup size is required for coffee items');
+      }
+      if (!Array.isArray(item.cupSizes) || item.cupSizes.length === 0) {
+        throw new BadRequestException(
+          'This item has no cup sizes configured — contact support',
+        );
       }
       const cupSizeConfig = item.cupSizes.find((cs) => cs.size === dto.cupSize);
       if (!cupSizeConfig) {
@@ -191,12 +222,20 @@ export class OrdersService {
       },
     );
 
-    // 3d. Reject if machine already processing an active order
+    // 3d. Check active orders — authoritative source for machine busy state.
+    // If isBusy is set but no active order exists, the flag is stale (crash/manual
+    // complete without lock release) — reset it and allow the order through.
     const activeOrder = await this.orderModel.findOne({
       machineId: dto.machineId,
       status: { $in: ['pending', 'dispensing'] },
     });
-    if (activeOrder) {
+
+    if ((machine as any).isBusy && !activeOrder) {
+      this.machinesService.setMachineBusy(dto.machineId, false).catch(() => null);
+      this.logger.warn(
+        `[Order] Cleared stale isBusy flag on machine ${dto.machineId} — no active order found`,
+      );
+    } else if (activeOrder) {
       throw new BadRequestException(
         'Machine is currently processing another order',
       );
@@ -278,20 +317,28 @@ export class OrdersService {
 
     let batchDeducted = false;
 
-    try {
-      // 7. Deduct from the effective customer's wallet
-      const tx = await this.walletService.deduct(
-        effectiveUserId,
-        totalAmount,
-        order.id,
-        dto.cupSize
-          ? `Order: ${item.name} (${dto.cupSize} x${dto.quantity})${discountApplied ? ` [-${discountApplied}%]` : ''}`
-          : `Order: ${item.name} x${dto.quantity}${discountApplied ? ` [-${discountApplied}%]` : ''}`,
-      );
+    // Admin placing without targetUserId bypasses wallet — use a sentinel transactionId
+    const skipWallet = isAdmin && !dto.targetUserId;
 
-      order.transactionId = tx.id;
-      order.status = 'dispensing';
-      await order.save();
+    try {
+      // 7. Deduct from the effective customer's wallet (skipped for admin test orders)
+      if (skipWallet) {
+        order.transactionId = `admin-${orderId}`;
+        order.status = 'dispensing';
+        await order.save();
+      } else {
+        const tx = await this.walletService.deduct(
+          effectiveUserId,
+          totalAmount,
+          order.id,
+          dto.cupSize
+            ? `Order: ${item.name} (${dto.cupSize} x${dto.quantity})${discountApplied ? ` [-${discountApplied}%]` : ''}`
+            : `Order: ${item.name} x${dto.quantity}${discountApplied ? ` [-${discountApplied}%]` : ''}`,
+        );
+        order.transactionId = tx.id;
+        order.status = 'dispensing';
+        await order.save();
+      }
 
       // 8. Resolve nozzle + calibration timers BEFORE MQTT publish
       let nozzleId: number | undefined;
@@ -359,13 +406,20 @@ export class OrdersService {
         order.status = 'failed';
         order.failureReason = 'Machine communication error';
         await order.save();
-        await this.walletService.refund(effectiveUserId, totalAmount, orderId);
+        // Use order._id (same key as the outer catch) so the wallet idempotency
+        // guard prevents a double-refund if the outer catch also runs.
+        await this.walletService.refund(
+          effectiveUserId,
+          totalAmount,
+          order._id.toString(),
+        );
         throw new ServiceUnavailableException(
           'Machine is not reachable. Payment has been refunded.',
         );
       }
 
-      // 10. Update machine revenue stats
+      // 10. Mark machine busy and update revenue stats
+      await this.machinesService.setMachineBusy(dto.machineId, true);
       await this.machinesService.incrementOrderStats(
         dto.machineId,
         totalAmount,
@@ -397,8 +451,8 @@ export class OrdersService {
       order.failureReason = (err as Error).message;
       await order.save();
 
-      // Refund wallet only if it was already deducted (transactionId set = money taken)
-      if (order.transactionId) {
+      // Refund wallet only if it was actually deducted (not an admin bypass order)
+      if (order.transactionId && !order.transactionId.startsWith('admin-')) {
         await this.walletService
           .refund(effectiveUserId, totalAmount, order._id.toString())
           .catch((e) =>
@@ -441,6 +495,12 @@ export class OrdersService {
     order.status = 'completed';
     const saved = await order.save();
 
+    this.machinesService
+      .setMachineBusy(order.machineId, false)
+      .catch((e) =>
+        this.logger.warn(`setMachineBusy(false) failed: ${(e as Error).message}`),
+      );
+
     this.notificationsService
       .create(
         order.userId,
@@ -462,14 +522,20 @@ export class OrdersService {
     callerId: string,
     callerRole: RoleEnum,
   ): Promise<Order> {
+    if (!reason || !reason.trim()) {
+      throw new BadRequestException('A failure reason is required');
+    }
     const order = await this.orderModel.findById(orderId).exec();
     if (!order) throw new NotFoundException(`Order ${orderId} not found`);
 
     await this.assertMachineAccess(order.machineId, callerId, callerRole);
 
-    // Auto-refund wallet if payment was already deducted
+    // Auto-refund wallet if payment was actually deducted.
+    // Checking transactionId (set immediately after wallet.deduct) is more
+    // reliable than checking order.status, which may not yet be 'dispensing'
+    // if the server crashed between deduction and the status update.
     let refunded = false;
-    if (order.status === 'dispensing') {
+    if (order.transactionId && !order.transactionId.startsWith('admin-')) {
       await this.walletService.refund(order.userId, order.totalAmount, orderId);
       refunded = true;
     }
@@ -477,6 +543,12 @@ export class OrdersService {
     order.status = 'failed';
     order.failureReason = reason;
     const saved = await order.save();
+
+    this.machinesService
+      .setMachineBusy(order.machineId, false)
+      .catch((e) =>
+        this.logger.warn(`setMachineBusy(false) failed: ${(e as Error).message}`),
+      );
 
     const notifMsg = refunded
       ? `Order failed. ${order.totalAmount} LKR has been refunded to your wallet.`
@@ -543,20 +615,57 @@ export class OrdersService {
     userId?: string,
     machineId?: string,
     status?: string,
-    agentId?: string,
-  ): Promise<Order[]> {
-    const filter: Record<string, string> = {};
+    limit = 50,
+    skip = 0,
+  ): Promise<any[]> {
+    const safeLimit = Math.min(Math.max(1, limit || 50), 200);
+    const safeSkip = Math.max(0, skip || 0);
+
+    const filter: Record<string, any> = {};
     if (userId) filter.userId = userId;
     if (machineId) filter.machineId = machineId;
     if (status) filter.status = status;
-    if (agentId) filter.agentId = agentId;
+    const orders = await this.orderModel
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip(safeSkip)
+      .limit(safeLimit)
+      .lean()
+      .exec();
+
+    if (!orders.length) return [];
+
+    // Batch-fetch machine names so the frontend can display name instead of ID
+    const machines = await this.machinesService.findAll();
+    const nameMap = new Map(
+      (machines as any[]).map((m) => [m.machineId, m.name]),
+    );
+
+    return orders.map((o) => ({
+      ...o,
+      _id: (o._id as any)?.toString(),
+      machineName: nameMap.get(o.machineId) ?? null,
+    }));
+  }
+
+  /**
+   * Returns all orders for a list of machineIds (used by agent dashboard/orders).
+   * Agents should see ALL orders on their machines — not just orders they placed —
+   * so the filter is by machineId, not by order.agentId.
+   */
+  async findAllByMachineIds(machineIds: string[], status?: string): Promise<Order[]> {
+    if (!machineIds.length) return [];
+    const filter: Record<string, any> = { machineId: { $in: machineIds } };
+    if (status) filter.status = status;
     return this.orderModel.find(filter).sort({ createdAt: -1 }).lean().exec();
   }
 
-  async findMyOrders(userId: string): Promise<Order[]> {
+  async findMyOrders(userId: string, limit = 50, skip = 0): Promise<Order[]> {
     return this.orderModel
       .find({ userId })
       .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .lean()
       .exec();
   }
@@ -610,6 +719,20 @@ export class OrdersService {
     const order = await this.orderModel.findOne({ orderId }).exec();
     if (!order) return; // stale ack — ignore silently
 
+    const allowedMachineStatuses = [
+      'completed',
+      'cancelled',
+      'processing',
+      'dispensing',
+      'half-completed',
+    ];
+    if (!allowedMachineStatuses.includes(status)) {
+      this.logger.warn(
+        `Machine sent unknown order status "${status}" for order ${orderId} — ignoring`,
+      );
+      return;
+    }
+
     const prevStatus = order.status;
 
     if (status === 'completed') {
@@ -649,6 +772,11 @@ export class OrdersService {
 
     if (error) order.failureReason = error;
     await order.save();
+
+    // Release machine busy lock when order reaches a terminal state
+    if (['completed', 'failed'].includes(order.status)) {
+      this.machinesService.setMachineBusy(order.machineId, false).catch(() => null);
+    }
   }
 
   /**
@@ -657,200 +785,324 @@ export class OrdersService {
    * Body: { user: { id: <mongoUserId> }, machine_id, items: [{item_id, item_name, vol, qty, nozzle}], amount, currency? }
    */
   async legacyPlaceOrder(body: any): Promise<any> {
-    const { user, machine_id, items, amount, currency = 'LKR' } = body;
-
-    if (!user?.id || !machine_id || !items?.length || amount == null) {
-      throw new BadRequestException(
-        'user.id, machine_id, items, and amount are required',
-      );
+    if (!body) {
+      throw new BadRequestException('Request body is required');
     }
 
-    // Cancel stale pending orders from same user on this machine
+    // ── Shared request context ────────────────────────────────────────────────
+    // New: { userId, machineId, itemId, cupSize, quantity, currency?, paymentStatus? }
+    // Old: { user: { id }, machine_id, items: [{ item_id, vol, qty, nozzle }], amount, currency? }
+    // Mobile app also sends client: { id, name } and org: { id, name } — pass through to response
+    const clientInfo: { id: unknown; name?: string } | null = body.client ?? null;
+    const orgInfo: { id: unknown; name?: string } | null = body.org ?? null;
+
+    const userId: string = body.userId ?? body.user?.id;
+    const machineId: string = body.machineId ?? body.machine_id;
+    const currency: string = body.currency ?? 'LKR';
+    const rawPaymentStatus: string = body.payment_status ?? body.paymentStatus ?? 'pending';
+    const paymentStatus: string = rawPaymentStatus === 'paid' ? 'completed' : rawPaymentStatus;
+
+    // Normalise items list — support both multi-item array and flat single-item format
+    const itemsList: any[] = body.items?.length
+      ? body.items
+      : [{ item_id: body.itemId, qty: body.quantity ?? 1, vol: body.vol, cupSize: body.cupSize }];
+
+    const firstItemId: string = itemsList[0]?.item_id ?? itemsList[0]?.itemId ?? body.itemId;
+    if (!userId || !machineId || !firstItemId) {
+      throw new BadRequestException('userId, machineId, and at least one item with item_id are required');
+    }
+
+    // Cancel stale pending orders from same user on this machine (once, before loop)
     await this.orderModel.updateMany(
-      { userId: user.id, machineId: machine_id, status: 'pending' },
-      {
-        $set: {
-          status: 'cancelled',
-          failureReason: 'Auto-cancelled: new order placed',
-        },
-      },
+      { userId, machineId, status: 'pending' },
+      { $set: { status: 'cancelled', failureReason: 'Auto-cancelled: new order placed' } },
     );
 
-    // Verify machine exists and is online
+    // Verify machine exists and is online (once)
     const machine = await this.machinesService
-      .findByMachineId(machine_id)
+      .findByMachineId(machineId)
       .catch(() => null);
-    if (!machine) {
-      throw new NotFoundException(`Machine ${machine_id} not found`);
-    }
-    if (!(machine as any).isOnline) {
-      throw new BadRequestException('Machine is currently offline');
-    }
+    if (!machine) throw new NotFoundException(`Machine ${machineId} not found`);
+    if (!(machine as any).isOnline) throw new BadRequestException('Machine is currently offline');
+    if ((machine as any).sleepMode) throw new BadRequestException('Machine is in sleep mode — please try again later');
 
-    const machineTypeLegacy: 'coffee' | 'food' =
-      (machine as any).machineType ?? 'coffee';
+    const machineType: 'coffee' | 'food' = (machine as any).machineType ?? 'coffee';
 
-    // Coffee only — boiler must have water (food machines have no water sensor)
-    if (machineTypeLegacy !== 'food') {
+    if (machineType !== 'food') {
       const waterLevel = (machine as any).sensor?.water;
       if (waterLevel && waterLevel !== 'present') {
-        throw new BadRequestException(
-          'Machine boiler has no water — please wait for refill',
-        );
+        throw new BadRequestException('Machine boiler has no water — please wait for refill');
       }
     }
 
-    // Reject if machine already has an active order
+    // Check for an active order in the database — this is the authoritative source.
+    // If isBusy is set but no active order exists (stale flag from a crash or manual
+    // complete/fail without releasing the lock), reset the flag and allow the order.
     const busyOrder = await this.orderModel.findOne({
-      machineId: machine_id,
+      machineId,
       status: { $in: ['pending', 'dispensing'] },
     });
-    if (busyOrder) {
+
+    if ((machine as any).isBusy && !busyOrder) {
+      // Stale lock — no active order in DB, safe to clear
+      this.machinesService.setMachineBusy(machineId, false).catch(() => null);
+      this.logger.warn(
+        `[Order] Cleared stale isBusy flag on machine ${machineId} — no active order found`,
+      );
+    } else if (busyOrder) {
       throw new BadRequestException('Machine is busy. Please wait.');
     }
 
-    // Resolve CUS-format ID (CUS-YYYYMMDD-HHMMSS) → MongoDB ObjectId for wallet lookup
-    let effectiveUserId = user.id;
-    if (user.id?.startsWith('CUS-')) {
+    // Resolve CUS-format ID (CUS-YYYYMMDD-HHMMSS) → MongoDB ObjectId for wallet lookup (once)
+    let effectiveUserId = userId;
+    if (userId?.startsWith('CUS-')) {
       const userRecord = await this.usersService
-        .findByCustomerId(user.id)
+        .findByCustomerId(userId)
         .catch(() => null);
       if (userRecord) effectiveUserId = (userRecord as any)._id.toString();
     }
 
-    this.logger.log(
-      `[Order] Checking wallet for user ${user.id} (effectiveId=${effectiveUserId}), amount: ${amount} ${currency}`,
-    );
+    // ── Process each item ─────────────────────────────────────────────────────
+    const results: any[] = [];
 
-    // Deduct wallet
-    const tx = await this.walletService.deduct(
-      effectiveUserId,
-      amount,
-      `legacy-${Date.now()}`,
-      `Order on machine ${machine_id}`,
-    );
+    for (const itemEntry of itemsList) {
+      const itemId: string = itemEntry.item_id ?? itemEntry.itemId;
+      const quantity: number = itemEntry.qty ?? 1;
+      const volInput: string | undefined = itemEntry.vol ?? body.vol;
+      const cupSizeInput: string | undefined = itemEntry.cupSize ?? body.cupSize;
+      const nozzleInput: number | undefined =
+        typeof itemEntry.nozzle === 'number' ? itemEntry.nozzle : undefined;
 
-    this.logger.log(
-      `[Order] Wallet deduction successful: previous=${(tx as any).balanceBefore} → new=${(tx as any).balanceAfter} (deducted ${amount} ${currency})`,
-    );
+      if (!itemId) continue;
 
-    // Build order record from old format
-    const orderId = generateOrderId();
-    const firstItem = items[0];
-    const order = await new this.orderModel({
-      orderId,
-      userId: effectiveUserId,
-      machineId: machine_id,
-      itemId: firstItem.item_id,
-      itemName: firstItem.item_name,
-      cupSize: firstItem.vol ?? null,
-      quantity: firstItem.qty ?? 1,
-      unitPrice: amount / (firstItem.qty || 1),
-      totalAmount: amount,
-      currency,
-      status: 'dispensing',
-      transactionId: tx.id,
-    }).save();
+      // ── Server-side item + price resolution ──────────────────────────────
+      const itemRecord = await this.itemsService.findOne(itemId).catch(() => null);
+      if (!itemRecord) {
+        this.logger.warn(`[Order] Item ${itemId} not found — skipping`);
+        results.push({ itemId, success: false, error: `Item ${itemId} not found` });
+        continue;
+      }
+      if (!(itemRecord as any).isAvailable) {
+        results.push({ itemId, success: false, error: 'This item is currently not available' });
+        continue;
+      }
 
-    this.logger.log(
-      `[Order] Order created: ${orderId} | machine=${machine_id} | user=${user.id} | items=${items.length}`,
-    );
+      const itemType: string = (itemRecord as any).itemType ?? 'coffee';
+      const itemName: string = (itemRecord as any).name ?? itemId;
 
-    const machineType = machineTypeLegacy;
-    const calibration: any[] = (machine as any).calibration ?? [];
+      let serverTotalAmount = 0;
+      let resolvedCupSize: string | undefined = cupSizeInput;
 
-    // Normalize vol string to match either "90" or "90ml" stored in calibration
-    const normalizeVol = (vol: string) => vol.replace(/ml/i, '').trim();
+      if (itemType === 'food') {
+        const unitPrice: number = (itemRecord as any).unitPrice ?? 0;
+        if (unitPrice > 0) serverTotalAmount = unitPrice * quantity;
+      } else {
+        // Coffee: if cupSize not sent directly, map vol → calibration → cupSize name
+        if (!resolvedCupSize && volInput) {
+          const calibration: any[] = (machine as any).calibration ?? [];
+          const volNorm = volInput.replace(/ml/i, '').trim();
+          const calib = calibration.find(
+            (c: any) =>
+              String(c.itemId) === String(itemId) &&
+              (c.cupSize === volInput ||
+                (c.cupSize ?? '').replace(/ml/i, '').trim() === volNorm ||
+                String(c.volMl ?? '') === volNorm),
+          );
+          resolvedCupSize = calib?.cupSize;
+        }
 
-    // Build comma-separated ord string for ALL items (matches old backend multi-item format)
-    const ordParts = (items as any[]).map((item: any) => {
-      const volNorm = normalizeVol(item.vol ?? '');
-      // Match calibration by itemId + cupSize — handles both "90" and "90ml" stored formats
+        const cupSizeConfig = (itemRecord as any).cupSizes?.find(
+          (cs: any) => cs.size === resolvedCupSize,
+        );
+        if (cupSizeConfig?.price > 0) {
+          serverTotalAmount = cupSizeConfig.price * quantity;
+        }
+      }
+
+      this.logger.log(
+        `[Order] Price resolved: item=${itemId} cupSize=${resolvedCupSize ?? volInput} → ${serverTotalAmount} ${currency}`,
+      );
+
+      // Pre-flight: validate calibration timers BEFORE touching the wallet
+      if (machineType === 'coffee') {
+        const calibration: any[] = (machine as any).calibration ?? [];
+        const volForCalib = volInput ?? resolvedCupSize ?? '';
+        const volNorm = volForCalib.replace(/ml/i, '').trim();
+        const calib = calibration.find(
+          (c: any) =>
+            String(c.itemId) === String(itemId) &&
+            (c.cupSize === volForCalib ||
+              (c.cupSize ?? '').replace(/ml/i, '').trim() === volNorm ||
+              String(c.volMl ?? '') === volNorm ||
+              c.cupSize === resolvedCupSize),
+        );
+        const tw: number = calib?.timerOfWater ?? 5000;
+        const tp: number = calib?.timerOfPowder ?? 3000;
+        if (tw < tp + 100) {
+          results.push({
+            itemId,
+            success: false,
+            error: `Timer mismatch: timerOfWater (${tw}ms) must be >= timerOfPowder (${tp}ms) + 100ms. Update calibration for machine ${machineId}.`,
+          });
+          continue;
+        }
+      }
+
+      this.logger.log(
+        `[Order] Checking wallet for user ${userId} (effectiveId=${effectiveUserId}), amount: ${serverTotalAmount} ${currency}`,
+      );
+
+      // Generate orderId before wallet deduction so it can serve as the
+      // deterministic referenceId — avoids Date.now() collisions on concurrent orders.
+      const orderId = generateOrderId();
+
+      // Deduct wallet
+      let tx: any;
+      try {
+        tx = await this.walletService.deduct(
+          effectiveUserId,
+          serverTotalAmount,
+          `legacy-${orderId}`,
+          `Order on machine ${machineId}`,
+        );
+      } catch (walletErr) {
+        this.logger.warn(
+          `[Order] Wallet deduction failed for item ${itemId}: ${(walletErr as Error).message}`,
+        );
+        results.push({ itemId, success: false, error: (walletErr as Error).message });
+        continue;
+      }
+
+      this.logger.log(
+        `[Order] Wallet deduction successful: previous=${(tx as any).balanceBefore} → new=${(tx as any).balanceAfter} (deducted ${serverTotalAmount} ${currency})`,
+      );
+
+      // Build order record
+      const order = await new this.orderModel({
+        orderId,
+        userId: effectiveUserId,
+        machineId,
+        itemId,
+        itemName,
+        cupSize: resolvedCupSize ?? volInput ?? null,
+        quantity,
+        unitPrice: serverTotalAmount / (quantity || 1),
+        totalAmount: serverTotalAmount,
+        currency,
+        status: 'dispensing',
+        paymentStatus,
+        transactionId: tx.id,
+      }).save();
+
+      this.logger.log(
+        `[Order] Order created: ${orderId} | machine=${machineId} | user=${userId} | item=${itemName}`,
+      );
+
+      // Deduct food batch stock
+      if (machineType === 'food') {
+        await this.machinesService.deductBatchStock(machineId, itemId, quantity).catch(() => null);
+      }
+
+      // ── Build MQTT ord string ───────────────────────────────────────────
+      const calibration: any[] = (machine as any).calibration ?? [];
+      const normalizeVol = (v: string) => v.replace(/ml/i, '').trim();
+      const volForCalib = volInput ?? resolvedCupSize ?? '';
+      const volNorm = normalizeVol(volForCalib);
+
       const calib = calibration.find(
         (c: any) =>
-          c.itemId === item.item_id &&
-          (c.cupSize === item.vol || normalizeVol(c.cupSize ?? '') === volNorm),
+          String(c.itemId) === String(itemId) &&
+          (c.cupSize === volForCalib ||
+            normalizeVol(c.cupSize ?? '') === volNorm ||
+            String(c.volMl ?? '') === volNorm ||
+            c.cupSize === resolvedCupSize),
       );
-      const noz = item.nozzle ?? calib?.nozzle ?? 1;
+
+      const nozzle = nozzleInput ?? calib?.nozzle ?? 1;
       const tw = calib?.timerOfWater ?? 5000;
       const tp = calib?.timerOfPowder ?? 3000;
 
       this.logger.log(
-        `[Order] Item: nozzle=${noz} name=${item.item_name} qty=${item.qty ?? 1} ` +
-          (machineType === 'food' ? '' : `water=${tw}ms powder=${tp}ms`),
+        `[Order] Item: nozzle=${nozzle} name=${itemName} qty=${quantity}` +
+          (machineType === 'food' ? '' : ` water=${tw}ms powder=${tp}ms`),
       );
 
-      return machineType === 'food'
-        ? `N${noz}-${item.item_name}-${item.qty ?? 1}-`
-        : `N${noz}-${item.item_name}-${item.qty ?? 1}-${tw}-${tp}`;
-    });
+      const ordStr =
+        machineType === 'food'
+          ? `N${nozzle}-${itemName}-${quantity}-`
+          : `N${nozzle}-${itemName}-${quantity}-${tw}-${tp}`;
 
-    const ordStr = ordParts.join(',');
-    this.logger.log(`[Order] MQTT ord string: ${ordStr}`);
+      this.logger.log(`[Order] MQTT ord string: ${ordStr}`);
 
-    // Hardware constraint for coffee: water timer must lead powder by ≥ 100ms
-    if (machineType === 'coffee') {
-      const volNorm = normalizeVol(firstItem.vol ?? '');
-      const firstCalib = calibration.find(
-        (c: any) =>
-          c.itemId === firstItem.item_id &&
-          (c.cupSize === firstItem.vol ||
-            normalizeVol(c.cupSize ?? '') === volNorm),
-      );
-      const tw = firstCalib?.timerOfWater ?? 5000;
-      const tp = firstCalib?.timerOfPowder ?? 3000;
-      if (tw < tp + 100) {
-        throw new BadRequestException(
-          `Timer mismatch: timerOfWater (${tw}ms) must be >= timerOfPowder (${tp}ms) + 100ms. Update calibration for machine ${machine_id}.`,
+      try {
+        await this.mqttService.publish(
+          `machine/order/${machineId}`,
+          {
+            command: {
+              ord_id: orderId,
+              user: userId,
+              ord: ordStr,
+              status: 'pending',
+            },
+          },
+          { qos: 0 },
         );
+        this.logger.log(
+          `[Order] MQTT command sent → machine/order/${machineId} | orderId=${orderId}`,
+        );
+      } catch (mqttErr) {
+        this.logger.error(
+          `MQTT dispense failed for legacy order ${orderId}: ${(mqttErr as Error).message}`,
+        );
+        order.status = 'failed';
+        order.failureReason = 'Machine communication error';
+        await order.save();
+        await this.walletService.refund(effectiveUserId, serverTotalAmount, orderId);
+        results.push({
+          itemId,
+          orderId,
+          success: false,
+          error: 'Machine is not reachable. Payment has been refunded.',
+        });
+        continue;
       }
+
+      results.push({
+        orderId,
+        itemId,
+        success: true,
+        order,
+        wallet_info: {
+          previous_balance: (tx as any).balanceBefore,
+          new_balance: (tx as any).balanceAfter,
+          deducted_amount: serverTotalAmount,
+          currency,
+        },
+      });
     }
 
-    try {
-      // Publish with same command wrapper the firmware expects
-      // QoS 0 — matches old backend (publishMachineCommand default)
-      await this.mqttService.publish(
-        `machine/order/${machine_id}`,
-        {
-          command: {
-            ord_id: orderId,
-            user: user.id, // Send original CUS-... ID so machine can display it
-            ord: ordStr,
-            status: 'pending',
-          },
-        },
-        { qos: 0 },
-      );
-      this.logger.log(
-        `[Order] MQTT command sent → machine/order/${machine_id} | orderId=${orderId}`,
-      );
-    } catch (mqttErr) {
-      this.logger.error(
-        `MQTT dispense failed for legacy order ${orderId}: ${(mqttErr as Error).message}`,
-      );
-      order.status = 'failed';
-      order.failureReason = 'Machine communication error';
-      await order.save();
-      await this.walletService.refund(effectiveUserId, amount, orderId);
-      throw new ServiceUnavailableException(
-        'Machine is not reachable. Payment has been refunded.',
-      );
+    const successfulOrders = results.filter((r) => r.success);
+
+    if (successfulOrders.length > 0) {
+      await this.machinesService.setMachineBusy(machineId, true);
     }
 
     this.logger.log(
-      `[Order] ✓ Legacy order complete: ${orderId} | machine=${machine_id} | user=${user.id} | ${machineType} machine`,
+      `[Order] ✓ Legacy orders complete: ${successfulOrders.length}/${itemsList.length} succeeded | machine=${machineId} | user=${userId} | ${machineType} machine`,
     );
 
     return {
-      success: true,
-      message: 'Order created successfully, wallet updated',
-      data: order,
-      wallet_info: {
-        previous_balance: (tx as any).balanceBefore,
-        new_balance: (tx as any).balanceAfter,
-        deducted_amount: amount,
-        currency,
-      },
+      orderId: successfulOrders[0]?.orderId,
+      success: successfulOrders.length > 0,
+      message:
+        successfulOrders.length > 0
+          ? 'Order created successfully, wallet updated'
+          : 'All items failed to process',
+      client: clientInfo,
+      org: orgInfo,
+      data: successfulOrders[0]?.order,
+      wallet_info: successfulOrders[0]?.wallet_info,
+      orders: results,
     };
   }
 }

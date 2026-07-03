@@ -3,22 +3,26 @@ import { LegacyUsersController } from './legacy-users.controller';
 import { LegacyWalletController } from './legacy-wallet.controller';
 import { LegacyOrdersController } from './legacy-orders.controller';
 import { LegacyMachinesController } from './legacy-machines.controller';
+import { LegacyMobileController } from './legacy-mobile.controller';
 import { UsersModule } from '../users/users.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { OrdersModule } from '../orders/orders.module';
 import { MachinesModule } from '../machines/machines.module';
+import { AuthModule } from '../auth/auth.module';
+import { OrganizationsModule } from '../organizations/organizations.module';
 
 /**
  * LegacyModule — provides backward-compatible endpoints matching the old Express API.
  * Used by the mobile app. Routes are excluded from the global /api prefix.
  */
 @Module({
-  imports: [UsersModule, WalletModule, OrdersModule, MachinesModule],
+  imports: [UsersModule, WalletModule, OrdersModule, MachinesModule, AuthModule, OrganizationsModule],
   controllers: [
     LegacyUsersController,
     LegacyWalletController,
     LegacyOrdersController,
     LegacyMachinesController,
+    LegacyMobileController,
   ],
 })
 export class LegacyModule {}

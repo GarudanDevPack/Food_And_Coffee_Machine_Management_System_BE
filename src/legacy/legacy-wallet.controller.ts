@@ -57,13 +57,23 @@ export class LegacyWalletController {
     };
   }
 
-  /** GET /getwalletbyuser?user_id=CUS-YYYYMMDD-HHMMSS */
+  /** GET /getwalletbyuser?user_id=CUS-YYYYMMDD-HHMMSS  or  ?user_id=<mongoObjectId> */
   @Get('getwalletbyuser')
   async getWalletByUser(@Query('user_id') user_id: string) {
-    // user_id is the CUS-* customerId — look up the MongoDB userId first
-    const user = await this.usersService.findByCustomerId(user_id);
-    if (!user) throw new NotFoundException('User not found');
-    const wallet = await this.walletService.getWallet(user.id as string);
+    if (!user_id) throw new BadRequestException('user_id is required');
+
+    let mongoUserId: string;
+    if (user_id.startsWith('CUS-')) {
+      // Legacy format: human-readable customerId
+      const user = await this.usersService.findByCustomerId(user_id);
+      if (!user) throw new NotFoundException('User not found');
+      mongoUserId = user.id as string;
+    } else {
+      // New app format: MongoDB ObjectId passed directly
+      mongoUserId = user_id;
+    }
+
+    const wallet = await this.walletService.getWallet(mongoUserId);
     return {
       success: true,
       message: 'Wallet retrieved successfully',

@@ -9,17 +9,25 @@ import {
 
 export class AgentTopupDto {
   @ApiProperty({
-    example: 'user_mongo_id_here',
-    description: 'Target customer user ID',
+    example: 'CUS-20240101-123456',
+    description: 'Customer human-readable ID from QR code',
   })
   @IsString()
   @IsNotEmpty()
-  targetUserId: string;
+  customerId!: string;
 
   @ApiProperty({ example: 500, description: 'Amount to credit (LKR)' })
   @IsNumber()
   @Min(1)
-  amount: number;
+  amount!: number;
+
+  @ApiPropertyOptional({
+    example: 'agent_mongo_id_here',
+    description: 'Agent ID — ignored server-side, taken from JWT',
+  })
+  @IsOptional()
+  @IsString()
+  agentId?: string;
 
   @ApiPropertyOptional({ example: 'Cash payment at outlet #3' })
   @IsOptional()

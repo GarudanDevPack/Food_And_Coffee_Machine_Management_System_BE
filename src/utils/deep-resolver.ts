@@ -13,6 +13,11 @@ async function deepResolvePromises(input) {
   }
 
   if (typeof input === 'object' && input !== null) {
+    // BSON ObjectId — convert to hex string before enumerating its buffer bytes
+    if (typeof (input as any).toHexString === 'function') {
+      return (input as any).toHexString();
+    }
+
     const keys = Object.keys(input);
     const resolvedObject = {};
 

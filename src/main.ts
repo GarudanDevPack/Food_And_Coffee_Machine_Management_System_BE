@@ -5,32 +5,36 @@ import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { useContainer } from 'class-validator';
 import cookieParser from 'cookie-parser';
+import { Types } from 'mongoose';
 import { AppModule } from './app.module';
 import validationOptions from './utils/validation-options';
 import { AllConfigType } from './config/config.type';
 import { ResolvePromisesInterceptor } from './utils/serializer.interceptor';
+
+// BSON ObjectId lacks a toJSON in some versions — JSON.stringify falls back to
+// enumerating the buffer bytes, producing { buffer: { 0:n, ... } } in responses.
+// Patching toJSON globally ensures every ObjectId serializes as a plain hex string.
+(Types.ObjectId.prototype as any).toJSON = function () {
+  return this.toHexString();
+};
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   useContainer(app.select(AppModule), { fallbackOnErrors: true });
   const configService = app.get(ConfigService<AllConfigType>);
 
+  // CORS — must be registered before any other middleware
+  app.enableCors({
+    origin: true, // reflects the request origin, allowing any origin
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    allowedHeaders: 'Content-Type,Authorization,x-custom-lang',
+    credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
+  });
+
   // Cookie-based auth — must be before guards that read cookies
   app.use(cookieParser());
-
-  // CORS: allow credentials so browser sends HttpOnly cookies
-  const frontendDomain = configService.get('app.frontendDomain', {
-    infer: true,
-  }) as string | undefined;
-  const allowedOrigins = frontendDomain
-    ? frontendDomain.split(',').map((o) => o.trim())
-    : true;
-  app.enableCors({
-    origin: allowedOrigins,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-custom-lang'],
-  });
 
   app.enableShutdownHooks();
   // Legacy mobile-app paths are excluded from the /api prefix
@@ -47,8 +51,7 @@ async function bootstrap() {
     { path: 'updatewallet', method: RequestMethod.PUT },
     { path: 'deletewallet', method: RequestMethod.DELETE },
     { path: 'update-wallet-amount', method: RequestMethod.PUT },
-    // Legacy order routes used by mobile app and hardware machines
-    { path: 'createorder', method: RequestMethod.POST },
+    // Legacy order routes used by hardware machines and mobile app
     { path: 'updateorderbymachine', method: RequestMethod.PUT },
     { path: 'getlastorderbymachine', method: RequestMethod.GET },
     { path: 'getorderbymachine', method: RequestMethod.GET },
@@ -56,8 +59,8 @@ async function bootstrap() {
     { path: 'ordersbyuser', method: RequestMethod.GET },
     { path: 'orderbyid', method: RequestMethod.GET },
     // Legacy machine routes used by admin panel and mobile app
-    { path: 'getmachinelog', method: RequestMethod.GET },
-    { path: 'getmachinesitems', method: RequestMethod.GET },
+    // getmachinelog removed — now served at /api/v1/getmachinelog (MachineQrController)
+    // getmachinesitems removed — now served at /api/v1/getmachinesitems (MachineMenuController)
     { path: 'getvolumesizes', method: RequestMethod.GET },
     { path: 'getallmachinelogs', method: RequestMethod.GET },
     { path: 'getallmachinebyclient', method: RequestMethod.GET },
@@ -87,6 +90,10 @@ async function bootstrap() {
       'API docs — auth via HttpOnly cookie (Bearer fallback for Swagger)',
     )
     .setVersion('1.0')
+    .addServer(
+      process.env.BACKEND_DOMAIN ?? 'http://localhost:3000',
+      'Local development',
+    )
     .addBearerAuth()
     .addCookieAuth('accessToken')
     .addGlobalParameters({

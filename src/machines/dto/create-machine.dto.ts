@@ -5,13 +5,14 @@ import {
   IsOptional,
   IsBoolean,
   IsEnum,
+  IsDateString,
 } from 'class-validator';
 
 export class CreateMachineDto {
   @ApiPropertyOptional({
-    example: 'cm_lz4abc12_x7r9kp2q',
     description:
-      'Auto-generated if omitted. Prefix: cm_ for coffee, vd_ for food/vending.',
+      'Firmware machine ID — must match the ID the physical machine uses for MQTT. Auto-generated if omitted.',
+    example: 'MCH-001',
   })
   @IsOptional()
   @IsString()
@@ -36,6 +37,14 @@ export class CreateMachineDto {
   @IsString()
   location?: string;
 
+  @ApiPropertyOptional({
+    enum: ['active', 'inactive', 'maintenance'],
+    default: 'active',
+  })
+  @IsOptional()
+  @IsEnum(['active', 'inactive', 'maintenance'])
+  status?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -57,4 +66,28 @@ export class CreateMachineDto {
   @IsOptional()
   @IsBoolean()
   autoFlushEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'QR code identifier — defaults to machineId if omitted',
+    example: 'MCH-001',
+  })
+  @IsOptional()
+  @IsString()
+  qrId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Last maintenance date (ISO 8601) — defaults to now',
+    example: '2026-04-29T00:00:00.000Z',
+  })
+  @IsOptional()
+  @IsDateString()
+  lastMaintenance?: string;
+
+  @ApiPropertyOptional({
+    description: 'Contract / subscription expiry date (ISO 8601)',
+    example: '2027-04-29T00:00:00.000Z',
+  })
+  @IsOptional()
+  @IsDateString()
+  expireAt?: string;
 }

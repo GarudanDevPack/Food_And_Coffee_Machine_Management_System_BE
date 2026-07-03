@@ -9,6 +9,10 @@
  *   POST   /createuser         public: create customer (auto CUS-ID + wallet)
  *   PUT    /updateuser         authenticated: update user fields
  *   DELETE /deleteuser         authenticated: delete user by body.id (customerId)
+ *
+ * Admin panel compatibility routes (served at /api/login — NOT excluded from global prefix):
+ *   POST   /login              admin panel: email+password login, sets HttpOnly cookies,
+ *                              returns { data: { ...user, token, refreshToken } }
  */
 
 import {
@@ -19,14 +23,19 @@ import {
   Delete,
   Body,
   Query,
+  Res,
   HttpCode,
   HttpStatus,
   NotFoundException,
   ConflictException,
   VERSION_NEUTRAL,
 } from '@nestjs/common';
-import { ApiTags, ApiBody } from '@nestjs/swagger';
+import { Response as ExpressResponse } from 'express';
+import { ApiTags, ApiBody, ApiOperation } from '@nestjs/swagger';
+import { ConfigService } from '@nestjs/config';
 import { UsersService } from '../users/users.service';
+import { AuthService } from '../auth/auth.service';
+import { AllConfigType } from '../config/config.type';
 import { RoleEnum } from '../roles/roles.enum';
 
 // Normalize phone same as old system
@@ -41,7 +50,91 @@ function normalizePhone(phone: string): string {
 @ApiTags('Legacy Users (Mobile App)')
 @Controller({ version: VERSION_NEUTRAL })
 export class LegacyUsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly authService: AuthService,
+    private readonly configService: ConfigService<AllConfigType>,
+  ) {}
+
+  /**
+   * POST /login  (served at /api/login — not in legacy exclude list so it keeps the global prefix)
+   * Admin panel: email+password login.
+   * Sets HttpOnly accessToken + refreshToken cookies and returns
+   * { data: { ...user, token, refreshToken } } matching the old Express format.
+   */
+  @Post('login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'POST /api/login — admin panel: email+password login, sets cookies' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['email', 'password'],
+      properties: {
+        email: { type: 'string', example: 'admin@example.com' },
+        password: { type: 'string', example: 'secret123' },
+      },
+    },
+  })
+  async login(
+    @Body() body: { email: string; password: string },
+    @Res({ passthrough: true }) res: ExpressResponse,
+  ) {
+    const result = await this.authService.validateLogin({
+      email: body.email,
+      password: body.password,
+    });
+
+    const isProduction =
+      this.configService.get('app.nodeEnv', { infer: true }) === 'production';
+
+    res.cookie('accessToken', result.token, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict',
+      expires: new Date(result.tokenExpires),
+      path: '/',
+    });
+
+    const refreshExpiresStr = (this.configService.getOrThrow(
+      'auth.refreshExpires',
+      { infer: true },
+    ) as string) || '30d';
+    const durationUnits: Record<string, number> = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 };
+    const durationMatch = /^(\d+)([dhms])$/.exec(refreshExpiresStr);
+    const refreshMs = durationMatch
+      ? parseInt(durationMatch[1], 10) * durationUnits[durationMatch[2]]
+      : 30 * 24 * 60 * 60 * 1000;
+
+    res.cookie('refreshToken', result.refreshToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict',
+      expires: new Date(Date.now() + refreshMs),
+      path: '/',
+    });
+
+    return {
+      data: {
+        ...result.user,
+        token: result.token,
+        refreshToken: result.refreshToken,
+      },
+    };
+  }
+
+  /**
+   * POST /logout  (served at /api/logout — keeps global prefix, clears HttpOnly cookies)
+   * Admin panel: invalidates the current session and clears both auth cookies.
+   * Does not require a valid JWT so it always succeeds even with a stale/expired token.
+   */
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'POST /api/logout — admin panel: clear auth cookies' })
+  async logout(@Res({ passthrough: true }) res: ExpressResponse) {
+    res.clearCookie('accessToken', { path: '/' });
+    res.clearCookie('refreshToken', { path: '/' });
+    return { success: true, message: 'Logged out successfully' };
+  }
 
   /** GET /users — all customers (admin) */
   @Get('users')

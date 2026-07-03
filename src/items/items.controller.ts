@@ -23,12 +23,12 @@ import { CreateRatingDto } from './dto/create-rating.dto';
 
 @ApiTags('Items')
 @ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'), RolesGuard)
 @Controller({ path: 'items', version: '1' })
 export class ItemsController {
   constructor(private readonly itemsService: ItemsService) {}
 
   @Post()
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(RoleEnum.super_admin, RoleEnum.admin, RoleEnum.client)
   @HttpCode(HttpStatus.CREATED)
   create(@Body() dto: CreateItemDto) {
@@ -55,12 +55,14 @@ export class ItemsController {
   }
 
   @Patch(':id')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(RoleEnum.super_admin, RoleEnum.admin, RoleEnum.client)
   update(@Param('id') id: string, @Body() dto: Partial<CreateItemDto>) {
     return this.itemsService.update(id, dto);
   }
 
   @Delete(':id')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(RoleEnum.super_admin, RoleEnum.admin)
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id') id: string) {
@@ -68,6 +70,7 @@ export class ItemsController {
   }
 
   @Post('ratings')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(RoleEnum.customer)
   @HttpCode(HttpStatus.CREATED)
   addRating(@Request() req, @Body() dto: CreateRatingDto) {

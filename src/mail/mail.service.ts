@@ -31,11 +31,10 @@ export class MailService {
       ]);
     }
 
-    const url = new URL(
-      this.configService.getOrThrow('app.frontendDomain', {
-        infer: true,
-      }) + '/confirm-email',
-    );
+    const domain = (
+      this.configService.getOrThrow('app.frontendDomain', { infer: true }) as string
+    ).split(',')[0].trim();
+    const url = new URL(domain + '/confirm-email');
     url.searchParams.set('hash', mailData.data.hash);
 
     await this.mailerService.sendMail({
@@ -83,11 +82,10 @@ export class MailService {
       ]);
     }
 
-    const url = new URL(
-      this.configService.getOrThrow('app.frontendDomain', {
-        infer: true,
-      }) + '/password-change',
-    );
+    const domain = (
+      this.configService.getOrThrow('app.frontendDomain', { infer: true }) as string
+    ).split(',')[0].trim();
+    const url = new URL(domain + '/password-change');
     url.searchParams.set('hash', mailData.data.hash);
     url.searchParams.set('expires', mailData.data.tokenExpires.toString());
 
@@ -135,11 +133,10 @@ export class MailService {
       ]);
     }
 
-    const url = new URL(
-      this.configService.getOrThrow('app.frontendDomain', {
-        infer: true,
-      }) + '/confirm-new-email',
-    );
+    const domain = (
+      this.configService.getOrThrow('app.frontendDomain', { infer: true }) as string
+    ).split(',')[0].trim();
+    const url = new URL(domain + '/confirm-new-email');
     url.searchParams.set('hash', mailData.data.hash);
 
     await this.mailerService.sendMail({

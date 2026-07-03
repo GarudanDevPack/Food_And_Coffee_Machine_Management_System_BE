@@ -121,7 +121,7 @@ export class WalletService {
     const balanceBefore = walletBefore.balance;
     const balanceAfter = balanceBefore - amount;
 
-    const tx = await new this.txModel({
+    const txDoc = new this.txModel({
       walletId: walletBefore.id,
       userId,
       amount,
@@ -132,8 +132,25 @@ export class WalletService {
       balanceBefore,
       balanceAfter,
       status: 'completed',
-    }).save();
-    return tx.toObject();
+    });
+
+    try {
+      await txDoc.save();
+    } catch (saveErr) {
+      // Balance was already atomically deducted above; restore it so the wallet
+      // stays consistent when the audit-trail write fails.
+      await this.walletModel
+        .findOneAndUpdate({ userId }, { $inc: { balance: amount } })
+        .exec()
+        .catch((restoreErr) =>
+          this.logger.error(
+            `CRITICAL: wallet deduct rolled back but balance restore failed for user ${userId}: ${(restoreErr as Error).message}`,
+          ),
+        );
+      throw saveErr;
+    }
+
+    return txDoc.toObject();
   }
 
   async refund(
@@ -207,10 +224,13 @@ export class WalletService {
   ): Promise<object[]> {
     const filter: Record<string, any> = {};
     if (userId) filter.userId = userId;
-    if (category) filter.category = category;
-    // When called from agent context: only return transactions where this agent
-    // processed the top-up (referenceId = agentId) OR any category if not filtering
-    if (agentId) filter.referenceId = agentId;
+    if (agentId) {
+      // Agent context: always show only this agent's processed top-ups
+      filter.referenceId = agentId;
+      filter.category = 'agent_topup';
+    } else if (category) {
+      filter.category = category;
+    }
 
     const txs = await this.txModel
       .find(filter)
@@ -239,6 +259,15 @@ export class WalletService {
       .exec();
 
     const userMap = new Map(users.map((u) => [u._id.toString(), u]));
+
+    // Batch-fetch wallets to resolve stored MongoDB _id → human-readable walletId
+    const walletMongoIds = [...new Set(txs.map((t) => t.walletId).filter(Boolean))];
+    const wallets = walletMongoIds.length
+      ? await this.walletModel.find({ _id: { $in: walletMongoIds } }).lean().exec()
+      : [];
+    const walletIdMap = new Map(
+      wallets.map((w: any) => [w._id.toString(), (w.walletId as string) ?? null]),
+    );
 
     const paymentMethodMap: Record<string, string> = {
       topup_qr: 'QR Code',
@@ -277,6 +306,7 @@ export class WalletService {
         reference: tx.referenceId ?? null,
         notes: tx.description ?? null,
         processedBy,
+        walletId: walletIdMap.get(tx.walletId) ?? null,
         createdAt: tx.createdAt,
         updatedAt: tx.updatedAt,
       };
@@ -293,8 +323,14 @@ export class WalletService {
     amount: number,
     note?: string,
   ): Promise<TransactionDocument> {
+    const MAX_TOPUP = 50_000;
     if (amount <= 0) {
       throw new BadRequestException('Top-up amount must be greater than zero');
+    }
+    if (amount > MAX_TOPUP) {
+      throw new BadRequestException(
+        `Top-up amount cannot exceed ${MAX_TOPUP} per transaction`,
+      );
     }
 
     // Atomic credit — returns doc BEFORE update for accurate audit trail

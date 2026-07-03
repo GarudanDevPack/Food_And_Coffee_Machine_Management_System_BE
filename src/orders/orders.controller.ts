@@ -28,7 +28,7 @@ export class OrdersController {
    * - Customer: places for themselves (no targetUserId needed)
    * - Agent: must include targetUserId in body to place on behalf of a customer
    */
-  @JwtAuth(RoleEnum.customer, RoleEnum.agent)
+  @JwtAuth(RoleEnum.customer, RoleEnum.agent, RoleEnum.super_admin, RoleEnum.admin)
   @Post()
   @HttpCode(HttpStatus.CREATED)
   placeOrder(@Request() req, @Body() dto: CreateOrderDto) {
@@ -38,8 +38,18 @@ export class OrdersController {
   /** Get my own order history */
   @JwtAuth(RoleEnum.customer)
   @Get('me')
-  getMyOrders(@Request() req) {
-    return this.ordersService.findMyOrders(req.user.id);
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'skip', required: false })
+  getMyOrders(
+    @Request() req,
+    @Query('limit') limit?: string,
+    @Query('skip') skip?: string,
+  ) {
+    return this.ordersService.findMyOrders(
+      req.user.id,
+      parseInt(limit ?? '', 10) || 50,
+      parseInt(skip ?? '', 10) || 0,
+    );
   }
 
   // ─── Admin / Agent / Client ────────────────────────────────────────────────
@@ -55,14 +65,22 @@ export class OrdersController {
   @ApiQuery({ name: 'userId', required: false })
   @ApiQuery({ name: 'machineId', required: false })
   @ApiQuery({ name: 'status', required: false })
-  @ApiQuery({ name: 'agentId', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'skip', required: false })
   findAll(
     @Query('userId') userId?: string,
     @Query('machineId') machineId?: string,
     @Query('status') status?: string,
-    @Query('agentId') agentId?: string,
+    @Query('limit') limit?: string,
+    @Query('skip') skip?: string,
   ) {
-    return this.ordersService.findAll(userId, machineId, status, agentId);
+    return this.ordersService.findAll(
+      userId,
+      machineId,
+      status,
+      parseInt(limit ?? '', 10) || 50,
+      parseInt(skip ?? '', 10) || 0,
+    );
   }
 
   @JwtAuth(

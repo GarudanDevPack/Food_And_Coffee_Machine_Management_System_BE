@@ -24,20 +24,43 @@ import {
   HttpStatus,
   VERSION_NEUTRAL,
 } from '@nestjs/common';
-import { ApiExcludeController } from '@nestjs/swagger';
+import { ApiBody, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { OrdersService } from '../orders/orders.service';
 
-@ApiExcludeController()
+@ApiTags('Legacy (Mobile / Hardware)')
 @Controller({ version: VERSION_NEUTRAL })
 export class LegacyOrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   /**
    * POST /createorder
-   * Body: { user: { id }, machine_id, items: [{item_id, item_name, vol, qty, nozzle}], amount, currency? }
+   * Body (mobile app format): { client, org, user: { id }, machine_id, items: [{item_id, item_name, vol, qty, nozzle}], price, currency? }
    */
   @Post('createorder')
   @HttpCode(HttpStatus.OK)
+  @ApiBody({
+    schema: {
+      example: {
+        client: { id: 1, name: 'QFOX Client' },
+        org:    { id: 1, name: 'QFOX Colombo Hub' },
+        user:   { id: '6a168654dc5e7b7504bbc4dd', name: 'John' },
+        machine_id: 'cm_mn420njq_01vtxhuc',
+        items: [{
+          item_id:       '69bc282675011b08dcfcbfda',
+          item_name:     'Cappuccino',
+          nozzle:        '',
+          qty:           1,
+          remaining_qty: 1,
+          vol:           '120ml',
+        }],
+        total_qty:      1,
+        items_count:    1,
+        price:          180.0,
+        currency:       'LKR',
+        payment_status: 'paid',
+      },
+    },
+  })
   createOrder(@Body() body: any) {
     return this.ordersService.legacyPlaceOrder(body);
   }
@@ -61,6 +84,7 @@ export class LegacyOrdersController {
    * Machine polls for its next pending/dispensing order.
    */
   @Get('getlastorderbymachine')
+  @ApiQuery({ name: 'machine_id', required: true })
   getLastOrderByMachine(@Query('machine_id') machineId: string) {
     return this.ordersService.getActiveOrderForMachine(machineId);
   }
@@ -70,6 +94,7 @@ export class LegacyOrdersController {
    * Same as getlastorderbymachine — alias used by older firmware.
    */
   @Get('getorderbymachine')
+  @ApiQuery({ name: 'machine_id', required: true })
   getOrderByMachine(@Query('machine_id') machineId: string) {
     return this.ordersService.getActiveOrderForMachine(machineId);
   }
@@ -79,6 +104,8 @@ export class LegacyOrdersController {
    * User checks their current active order on a specific machine.
    */
   @Get('getorderbyuser')
+  @ApiQuery({ name: 'machine_id', required: true })
+  @ApiQuery({ name: 'user_id', required: true })
   getOrderByUser(
     @Query('machine_id') machineId: string,
     @Query('user_id') userId: string,

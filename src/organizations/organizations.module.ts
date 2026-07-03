@@ -5,6 +5,7 @@ import {
   OrganizationSchema,
 } from './schemas/organization.schema';
 import { Order, OrderSchema } from '../orders/schemas/order.schema';
+import { Machine, MachineSchema } from '../machines/schemas/machine.schema';
 import { OrganizationsService } from './organizations.service';
 import { OrganizationsController } from './organizations.controller';
 
@@ -13,6 +14,7 @@ import { OrganizationsController } from './organizations.controller';
     MongooseModule.forFeature([
       { name: Organization.name, schema: OrganizationSchema },
       { name: Order.name, schema: OrderSchema },
+      { name: Machine.name, schema: MachineSchema },
     ]),
   ],
   controllers: [OrganizationsController],

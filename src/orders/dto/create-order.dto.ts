@@ -2,7 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsString,
   IsNotEmpty,
-  IsNumber,
+  IsInt,
   Min,
   IsOptional,
   IsMongoId,
@@ -32,7 +32,7 @@ export class CreateOrderDto {
   cupSize?: string;
 
   @ApiProperty({ example: 1, minimum: 1 })
-  @IsNumber()
+  @IsInt()
   @Min(1)
   quantity: number;
 

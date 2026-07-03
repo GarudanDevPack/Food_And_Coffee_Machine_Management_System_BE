@@ -38,11 +38,13 @@ export class WalletController {
   constructor(private readonly walletService: WalletService) {}
 
   @Get('me')
+  @Roles(RoleEnum.customer, RoleEnum.agent)
   getMyWallet(@Request() req) {
     return this.walletService.getWallet(req.user.id);
   }
 
   @Get('me/balance')
+  @Roles(RoleEnum.customer, RoleEnum.agent)
   getBalance(@Request() req) {
     return this.walletService.getBalance(req.user.id);
   }
@@ -55,6 +57,7 @@ export class WalletController {
   }
 
   @Get('me/transactions')
+  @Roles(RoleEnum.customer, RoleEnum.agent)
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'skip', required: false })
   getTransactions(
@@ -147,12 +150,12 @@ export class WalletController {
   @Post('agent-topup')
   @Roles(RoleEnum.agent)
   @HttpCode(HttpStatus.CREATED)
-  agentTopup(@Request() req, @Body() dto: AgentTopupDto) {
+  agentTopup(@Request() req, @Body() body: any) {
     return this.walletService.agentTopup(
       req.user.id,
-      dto.targetUserId,
-      dto.amount,
-      dto.note,
+      body.targetUserId,
+      body.amount,
+      body.note,
     );
   }
 
@@ -211,6 +214,7 @@ export class WalletController {
    * Customer views their own top-up request history.
    */
   @Get('topup-requests/mine')
+  @Roles(RoleEnum.customer, RoleEnum.agent)
   @ApiOperation({ summary: 'Get my own top-up request history' })
   @ApiOkResponse({ description: 'Top-up request history for the calling user' })
   getMyTopupRequests(@Request() req) {

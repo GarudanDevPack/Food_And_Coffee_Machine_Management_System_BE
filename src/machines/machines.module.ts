@@ -4,6 +4,9 @@ import { Machine, MachineSchema } from './schemas/machine.schema';
 import { MachinesService } from './machines.service';
 import { MachinesController } from './machines.controller';
 import { MachinesPublicController } from './machines-public.controller';
+import { MachineQrController, MachineMenuController } from './machine-qr.controller';
+import { UsersModule } from '../users/users.module';
+import { OrganizationsModule } from '../organizations/organizations.module';
 import { Order, OrderSchema } from '../orders/schemas/order.schema';
 import { Item, ItemSchema } from '../items/schemas/item.schema';
 import { WalletModule } from '../wallet/wallet.module';
@@ -22,8 +25,10 @@ import { EventsModule } from '../events/events.module';
     AlertsModule,
     NotificationsModule,
     EventsModule,
+    UsersModule,
+    OrganizationsModule,
   ],
-  controllers: [MachinesController, MachinesPublicController],
+  controllers: [MachinesController, MachinesPublicController, MachineQrController, MachineMenuController],
   providers: [MachinesService],
   exports: [MachinesService],
 })

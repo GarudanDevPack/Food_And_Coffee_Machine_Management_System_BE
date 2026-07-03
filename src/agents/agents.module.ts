@@ -9,6 +9,8 @@ import { MembershipsModule } from '../memberships/memberships.module';
 import { UsersModule } from '../users/users.module';
 import { AlertsModule } from '../alerts/alerts.module';
 import { AgentLog, AgentLogSchema } from './schemas/agent-log.schema';
+import { Item, ItemSchema } from '../items/schemas/item.schema';
+import { Order, OrderSchema } from '../orders/schemas/order.schema';
 
 @Module({
   imports: [
@@ -20,6 +22,8 @@ import { AgentLog, AgentLogSchema } from './schemas/agent-log.schema';
     AlertsModule,
     MongooseModule.forFeature([
       { name: AgentLog.name, schema: AgentLogSchema },
+      { name: Item.name, schema: ItemSchema },
+      { name: Order.name, schema: OrderSchema },
     ]),
   ],
   controllers: [AgentsController],

@@ -36,6 +36,8 @@ import { AuthUpdateDto } from './dto/auth-update.dto';
 import { AuthRegisterLoginDto } from './dto/auth-register-login.dto';
 import { AdminRegisterDto } from './dto/admin-register.dto';
 import { AgentRegisterDto } from './dto/agent-register.dto';
+import { PhoneForgotPasswordDto } from './dto/phone-forgot-password.dto';
+import { PhoneResetPasswordDto } from './dto/phone-reset-password.dto';
 import { LoginResponseDto } from './dto/login-response.dto';
 import { RefreshResponseDto } from './dto/refresh-response.dto';
 import { NullableType } from '../utils/types/nullable.type';
@@ -349,5 +351,32 @@ export class AuthController {
       result.tokenExpires,
     );
     return result;
+  }
+
+  // ─── Phone Forgot / Reset Password ───────────────────────────────────────────
+
+  /**
+   * POST /auth/phone/forgot-password
+   * Sends a 6-digit password-reset OTP to the user's registered phone via SMS.
+   */
+  @Post('phone/forgot-password')
+  @HttpCode(HttpStatus.OK)
+  async phoneForgotPassword(
+    @Body() dto: PhoneForgotPasswordDto,
+  ): Promise<{ message: string }> {
+    return this.service.phoneForgotPassword(dto.phone);
+  }
+
+  /**
+   * POST /auth/phone/reset-password
+   * Verifies the reset OTP and updates the user's password.
+   * All sessions are invalidated after a successful reset.
+   */
+  @Post('phone/reset-password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async phoneResetPassword(
+    @Body() dto: PhoneResetPasswordDto,
+  ): Promise<void> {
+    return this.service.phoneResetPassword(dto.phone, dto.code, dto.password);
   }
 }

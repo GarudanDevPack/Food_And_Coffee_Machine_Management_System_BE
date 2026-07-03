@@ -10,7 +10,7 @@ import * as mqtt from 'mqtt';
 @Injectable()
 export class MqttService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MqttService.name);
-  private client: mqtt.MqttClient;
+  private client!: mqtt.MqttClient;
   private readonly messageHandlers = new Map<
     string,
     ((payload: string) => void)[]
@@ -50,8 +50,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     this.client = mqtt.connect(brokerUrl, {
       clientId,
       clean: true,
-      connectTimeout: 4000,
+      connectTimeout: 10000,
       reconnectPeriod: 5000,
+      keepalive: 30,
       ...(username ? { username } : {}),
       ...(password ? { password } : {}),
     });
@@ -171,7 +172,14 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
         `[MQTT →] ${topic} | qos=${options.qos ?? 1} retain=${options.retain ?? false} | ${message}`,
       );
     }
-    return new Promise((resolve, reject) => {
+
+    if (!this.client.connected) {
+      return Promise.reject(
+        new Error('MQTT broker is not connected — cannot publish'),
+      );
+    }
+
+    const publishPromise = new Promise<void>((resolve, reject) => {
       this.client.publish(
         topic,
         message,
@@ -186,6 +194,15 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
         },
       );
     });
+
+    const timeoutPromise = new Promise<void>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`MQTT publish timeout on topic "${topic}"`)),
+        8000,
+      ),
+    );
+
+    return Promise.race([publishPromise, timeoutPromise]);
   }
 
   subscribe(topic: string, handler: (payload: string) => void): void {

@@ -1,17 +1,14 @@
 /**
  * Legacy Machine endpoints — exact same paths as the old Express API.
- * Used by admin panel and mobile app. No /api prefix, no versioning, no auth guards.
+ * Served without /api prefix. Visible in Swagger under "Legacy Machines" tag.
  *
- * Old routes (public — no verifyToken):
- *   GET /getmachinesitems   mobile: get items available on a machine by id
- *   GET /getmachinelog      mobile/admin: get machine status/details by id
- *   GET /getvolumesizes     mobile: get cup size names for a machine item
- *
- * Old routes (verifyToken + verifyRole("client")):
- *   GET /getallmachinelogs          admin: get all machines
- *   GET /getallmachinebyclient      admin: get machines by client
- *   PUT /updatemachinelog           admin: trigger flush, sleep, or update fields
- *   PUT /updatemachinelogstatus     admin: mark machine online/offline
+ * GET /getmachinesitems?id=...       mobile: items on a machine
+ * GET /getmachinelog?id=...          mobile/admin: machine details
+ * GET /getvolumesizes?...            mobile: cup sizes for an item
+ * GET /getallmachinelogs             admin: all machines
+ * GET /getallmachinebyclient?...     admin: machines by client
+ * PUT /updatemachinelog              admin: flush / sleep / update
+ * PUT /updatemachinelogstatus        admin: online/offline status
  */
 
 import {
@@ -26,21 +23,17 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiExcludeController } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiQuery, ApiExcludeEndpoint } from '@nestjs/swagger';
 import { MachinesService } from '../machines/machines.service';
 
-@ApiExcludeController()
+@ApiTags('Legacy Machines (No /api prefix)')
 @Controller({ version: VERSION_NEUTRAL })
 export class LegacyMachinesController {
   constructor(private readonly machinesService: MachinesService) {}
 
-  /**
-   * GET /getmachinesitems?id=MCH-001
-   * Mobile app: get all items available on a machine with stock and calibration.
-   * Old backend: getMachineMobile() — returns Items array from machine.item_id.
-   * New backend: getMachineMenu() — returns same data plus cupSizes and stock.
-   */
   @Get('getmachinesitems')
+  @ApiOperation({ summary: 'GET /getmachinesitems — items available on a machine' })
+  @ApiQuery({ name: 'id', description: 'machineId (e.g. MCH-001)', required: true })
   async getMachineItems(@Query('id') id: string) {
     if (!id) throw new NotFoundException('Machine ID is required');
     const menu = await this.machinesService.getMachineMenu(id);
@@ -51,29 +44,27 @@ export class LegacyMachinesController {
     };
   }
 
-  /**
-   * GET /getmachinelog?id=MCH-001
-   * Mobile app / admin panel: get machine details and status.
-   * Old backend: getMachine() — finds by machine id field, returns full document.
-   */
   @Get('getmachinelog')
+  @ApiExcludeEndpoint()  // use GET /api/v1/getmachinelog instead (MachineQrController)
   async getMachineLog(@Query('id') id: string) {
     if (!id) throw new NotFoundException('Machine ID is required');
     const machine = await this.machinesService.findByMachineId(id);
+    const m = machine as any;
+    const machineStatus = !m.isOnline ? 'offline'
+      : m.sleepMode ? 'sleep'
+      : m.isBusy ? 'busy'
+      : 'online';
     return {
       success: true,
       message: 'Machine retrieved successfully',
-      data: machine,
+      data: { ...machine, machineStatus },
     };
   }
 
-  /**
-   * GET /getvolumesizes?machine_id=MCH-001&item_id=ITEM-001
-   * Mobile app: get available cup size names for an item on a machine.
-   * Old backend: getVolumeSizes() — queries Volume model for size names.
-   * New backend: sizes are embedded in machine.calibration[].cupSize.
-   */
   @Get('getvolumesizes')
+  @ApiOperation({ summary: 'GET /getvolumesizes — available cup sizes for an item on a machine' })
+  @ApiQuery({ name: 'machine_id', required: true })
+  @ApiQuery({ name: 'item_id', required: true })
   async getVolumeSizes(
     @Query('machine_id') machineId: string,
     @Query('item_id') itemId: string,
@@ -93,21 +84,15 @@ export class LegacyMachinesController {
       .filter((c) => c.itemId === itemId && c.cupSize)
       .map((c) => c.cupSize);
 
-    const uniqueSizes = [...new Set(sizes)];
-
     return {
       success: true,
       message: 'Volume sizes retrieved successfully',
-      data: uniqueSizes,
+      data: [...new Set(sizes)],
     };
   }
 
-  /**
-   * GET /getallmachinelogs
-   * Admin panel: get all machines.
-   * Old backend: getAllMachines() — returns all MachineLog documents.
-   */
   @Get('getallmachinelogs')
+  @ApiOperation({ summary: 'GET /getallmachinelogs — all machines (no filters)' })
   async getAllMachineLogs() {
     const machines = await this.machinesService.findAll();
     return {
@@ -117,12 +102,9 @@ export class LegacyMachinesController {
     };
   }
 
-  /**
-   * GET /getallmachinebyclient?client_id=CL-001
-   * Admin panel: get machines for a specific client.
-   * Old backend: getAllMachinesByClient() — filters by client_id.
-   */
   @Get('getallmachinebyclient')
+  @ApiOperation({ summary: 'GET /getallmachinebyclient — machines filtered by client' })
+  @ApiQuery({ name: 'client_id', required: false })
   async getAllMachinesByClient(@Query('client_id') clientId: string) {
     const machines = await this.machinesService.findAll(clientId);
     return {
@@ -132,18 +114,9 @@ export class LegacyMachinesController {
     };
   }
 
-  /**
-   * PUT /updatemachinelog
-   * Admin panel: trigger flush, toggle sleep mode, or update machine fields.
-   * Old backend: updateMachine() — sets fields in DB then publishes MQTT command.
-   *
-   * flush_mode: true  → triggerManualFlush → publishes { flush:'true', sleep:'false', configMode:'false' }
-   * sleep_mode: bool  → setSleepMode → publishes sleep or wake MQTT command
-   *
-   * Returns: { success, message, data: { modifiedCount: 1 } }  (matches old backend format)
-   */
   @Put('updatemachinelog')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'PUT /updatemachinelog — trigger flush / toggle sleep / update fields' })
   async updateMachineLog(@Body() body: any) {
     const { id, flush_mode, sleep_mode } = body;
     if (!id) throw new BadRequestException('Machine ID is required');
@@ -171,14 +144,9 @@ export class LegacyMachinesController {
     };
   }
 
-  /**
-   * PUT /updatemachinelogstatus
-   * Admin panel: mark machine online or offline.
-   * Old backend: updateMachineStatus() — updates status + error fields in DB.
-   * New backend maps `isOnline` field to the machine document.
-   */
   @Put('updatemachinelogstatus')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'PUT /updatemachinelogstatus — mark machine online or offline' })
   async updateMachineLogStatus(@Body() body: any) {
     const { id, isOnline } = body;
     if (!id) throw new BadRequestException('Machine ID is required');

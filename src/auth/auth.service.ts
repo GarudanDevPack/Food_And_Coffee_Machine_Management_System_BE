@@ -740,6 +740,102 @@ export class AuthService {
     return { refreshToken, token, tokenExpires, user };
   }
 
+  // ─── Phone Forgot / Reset Password ───────────────────────────────────────────
+
+  /**
+   * POST /auth/phone/forgot-password
+   * Sends a password-reset OTP to the user's registered phone number.
+   */
+  async phoneForgotPassword(phone: string): Promise<{ message: string }> {
+    const normalized = this.normalizePhone(phone);
+
+    const user = await this.usersService.findByPhone(normalized);
+    if (!user) {
+      throw new NotFoundException('No account found with this phone number');
+    }
+
+    // Invalidate any previous unused reset OTPs for this phone
+    await this.otpModel.updateMany(
+      { phone: normalized, used: false, purpose: 'reset' },
+      { $set: { used: true } },
+    );
+
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+    await new this.otpModel({
+      phone: normalized,
+      code,
+      expiresAt,
+      purpose: 'reset',
+    }).save();
+
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    const from = process.env.TWILIO_FROM;
+
+    if (accountSid && authToken && from) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const twilio = require('twilio');
+        const client = twilio(accountSid, authToken);
+        await client.messages.create({
+          body: `Your QFOX password reset code is: ${code}. Valid for 5 minutes.`,
+          from,
+          to: normalized,
+        });
+        this.logger.log(`Reset OTP sent to ${normalized}`);
+      } catch (err) {
+        this.logger.error(
+          `Twilio SMS failed for ${normalized}: ${(err as Error).message}`,
+        );
+      }
+    } else {
+      this.logger.warn(`[DEV] Reset OTP for ${normalized}: ${code}`);
+    }
+
+    return { message: 'OTP sent successfully' };
+  }
+
+  /**
+   * POST /auth/phone/reset-password
+   * Verifies a reset OTP and updates the user's password.
+   */
+  async phoneResetPassword(
+    phone: string,
+    code: string,
+    password: string,
+  ): Promise<void> {
+    const normalized = this.normalizePhone(phone);
+
+    const user = await this.usersService.findByPhone(normalized);
+    if (!user) {
+      throw new NotFoundException('No account found with this phone number');
+    }
+
+    const otp = await this.otpModel
+      .findOne({
+        phone: normalized,
+        code,
+        used: false,
+        purpose: 'reset',
+        expiresAt: { $gt: new Date() },
+      })
+      .exec();
+
+    if (!otp) {
+      throw new BadRequestException('Invalid or expired OTP');
+    }
+
+    otp.used = true;
+    await otp.save();
+
+    user.password = password;
+
+    await this.sessionService.deleteByUserId({ userId: user.id });
+    await this.usersService.update(user.id, user);
+  }
+
   private async getTokensData(data: {
     id: User['id'];
     role: User['role'];

@@ -144,16 +144,34 @@ export class DashboardService {
       match.createdAt = dateFilter;
     }
 
-    return this.orderModel.aggregate([
+    const rows = await this.orderModel.aggregate([
       { $match: match },
       {
         $group: {
           _id: '$machineId',
           totalRevenue: { $sum: '$totalAmount' },
-          orderCount: { $sum: 1 },
+          totalOrders: { $sum: 1 },
         },
       },
       { $sort: { totalRevenue: -1 } },
     ]);
+
+    if (!rows.length) return [];
+
+    const machineIds = rows.map((r) => r._id).filter(Boolean);
+    const machines = await this.machineModel
+      .find({ machineId: { $in: machineIds } })
+      .lean()
+      .exec();
+    const nameMap = new Map(
+      (machines as any[]).map((m) => [m.machineId, m.name]),
+    );
+
+    return rows.map((r) => ({
+      machineId: r._id,
+      name: nameMap.get(r._id) ?? r._id,
+      totalRevenue: r.totalRevenue,
+      totalOrders: r.totalOrders,
+    }));
   }
 }

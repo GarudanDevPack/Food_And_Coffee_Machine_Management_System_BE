@@ -4,12 +4,13 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { isValidObjectId, Model } from 'mongoose';
 import {
   Organization,
   OrganizationDocument,
 } from './schemas/organization.schema';
 import { Order, OrderDocument } from '../orders/schemas/order.schema';
+import { Machine, MachineDocument } from '../machines/schemas/machine.schema';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 
@@ -20,6 +21,8 @@ export class OrganizationsService {
     private readonly orgModel: Model<OrganizationDocument>,
     @InjectModel(Order.name)
     private readonly orderModel: Model<OrderDocument>,
+    @InjectModel(Machine.name)
+    private readonly machineModel: Model<MachineDocument>,
   ) {}
 
   // ─── Auto-generate orgId ────────────────────────────────────────────────────
@@ -70,6 +73,17 @@ export class OrganizationsService {
     const org = await this.orgModel.findById(id).lean().exec();
     if (!org) throw new NotFoundException('Organization not found');
     return org;
+  }
+
+  /** Find by either the ORG-001 string id or a MongoDB ObjectId — used by QR endpoint. */
+  async findByOrgRef(ref: string): Promise<Organization | null> {
+    if (!ref) return null;
+    const byString = await this.orgModel.findOne({ orgId: ref }).lean().exec();
+    if (byString) return byString;
+    if (isValidObjectId(ref)) {
+      return this.orgModel.findById(ref).lean().exec();
+    }
+    return null;
   }
 
   async findByClientUserId(clientUserId: string): Promise<Organization> {
@@ -145,6 +159,15 @@ export class OrganizationsService {
       .lean()
       .exec();
     if (!org) throw new NotFoundException('Organization not found');
+
+    // Sync org/client assignment back to the machine document
+    await this.machineModel
+      .findOneAndUpdate(
+        { machineId },
+        { $set: { orgId: (org as any)._id.toString(), clientId: org.clientUserId } },
+      )
+      .exec();
+
     return org;
   }
 
@@ -158,6 +181,15 @@ export class OrganizationsService {
       .lean()
       .exec();
     if (!org) throw new NotFoundException('Organization not found');
+
+    // Clear org/client from machine document
+    await this.machineModel
+      .findOneAndUpdate(
+        { machineId },
+        { $set: { orgId: null, clientId: null } },
+      )
+      .exec();
+
     return org;
   }
 

@@ -2,11 +2,12 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   Logger,
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { isValidObjectId, Model, Types } from 'mongoose';
 import { Cron } from '@nestjs/schedule';
 import { Machine, MachineDocument } from './schemas/machine.schema';
 import { Order, OrderDocument } from '../orders/schemas/order.schema';
@@ -31,6 +32,7 @@ import { EventsGateway } from '../events/events.gateway';
 @Injectable()
 export class MachinesService implements OnModuleInit {
   private readonly logger = new Logger(MachinesService.name);
+  private offlineCheckRunning = false;
 
   constructor(
     @InjectModel(Machine.name)
@@ -97,7 +99,23 @@ export class MachinesService implements OnModuleInit {
         update.error = 'Sleep_Mode_ON';
         this.logger.log(`Machine ${payload.machine_id} confirmed sleep mode`);
       } else {
-        if (payload.error !== undefined) update.error = payload.error;
+        if (payload.error !== undefined) {
+          // Firmware sends state strings in the error field — map known "ready" states to null
+          const READY_STATES = ['ready_state', 'ready'];
+          const normalizedError =
+            payload.error && READY_STATES.includes(payload.error.toLowerCase())
+              ? null
+              : payload.error;
+          update.error = normalizedError;
+          // When firmware confirms ready/idle, clear isBusy as a safety reset
+          if (normalizedError === null && payload.status === 'online') {
+            update.isBusy = false;
+          }
+        }
+        // Firmware explicitly reports it is dispensing an order
+        if (payload.status === 'busy') {
+          update.isBusy = true;
+        }
         if (payload.status === 'online') {
           // Clear the retained wake message only on the transition from offline → online.
           // We check isOnline (not sleepMode) because setSleepMode(false) already clears
@@ -396,15 +414,92 @@ export class MachinesService implements OnModuleInit {
   // ─── CRUD ────────────────────────────────────────────────────────────────────
 
   async create(dto: CreateMachineDto): Promise<Machine> {
-    if (!dto.machineId) {
-      // Auto-generate: cm_ prefix for coffee, vd_ prefix for food/vending
+    const { machineId: suppliedId, ...rest } = dto;
+    let machineId = suppliedId?.trim();
+    if (!machineId) {
       const ts = Date.now().toString(36);
       const rand = Math.random().toString(36).slice(2, 10);
       const prefix = dto.machineType === 'food' ? 'vd' : 'cm';
-      (dto as any).machineId = `${prefix}_${ts}_${rand}`;
+      machineId = `${prefix}_${ts}_${rand}`;
     }
-    const machine = new this.machineModel(dto);
-    return machine.save();
+    const machine = new this.machineModel({
+      ...rest,
+      machineId,
+      qrId: rest.qrId || machineId, // mirrors old BE: qr_id: req.body.qr_id || id_name
+    });
+    try {
+      return await machine.save();
+    } catch (err: any) {
+      if (err?.code === 11000) {
+        throw new ConflictException(
+          `Machine with ID "${machineId}" already exists`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Safely convert an itemId value (which may be a string, a BSON ObjectId, or an
+   * accidentally-nested plain object) to a hex string, or '' if unresolvable.
+   */
+  private resolveItemId(v: any): string {
+    if (!v) return '';
+    if (typeof v === 'string') return v;
+    // Proper BSON ObjectId instance (has toHexString)
+    if (typeof v.toHexString === 'function') return v.toHexString();
+    // Mongoose 8 + BSON v5 returns ObjectId stored in a String-typed schema field
+    // as a plain object: { buffer: { 0: 106, 1: 33, ..., 11: 175 } }
+    if (v.buffer !== undefined) {
+      try {
+        const buf =
+          v.buffer instanceof Uint8Array
+            ? v.buffer
+            : Uint8Array.from(Object.values(v.buffer) as number[]);
+        if (buf.length === 12) return new Types.ObjectId(buf).toHexString();
+      } catch { /* fall through */ }
+    }
+    if (typeof v.toString === 'function') {
+      const s = v.toString();
+      if (s !== '[object Object]') return s;
+    }
+    if (v._id) return this.resolveItemId(v._id);
+    return '';
+  }
+
+  /**
+   * Coerce every inventory entry's itemId to a plain string and populate itemName
+   * from the Items collection. Filters out any IDs that are not valid ObjectIds
+   * so the $in query never receives "[object Object]".
+   */
+  private async populateInventoryNames(machines: Machine[]): Promise<Machine[]> {
+    const ids = [
+      ...new Set(
+        machines
+          .flatMap((m) => (m as any).inventory ?? [])
+          .map((inv: any) => this.resolveItemId(inv.itemId))
+          .filter((id) => id && isValidObjectId(id)),
+      ),
+    ];
+    const nameMap = new Map<string, string>();
+    if (ids.length) {
+      const items = await this.itemModel
+        .find({ _id: { $in: ids } })
+        .select('_id name')
+        .lean();
+      items.forEach((i) => nameMap.set(String(i._id), (i as any).name));
+    }
+    return machines.map((m) => ({
+      ...m,
+      inventory: ((m as any).inventory ?? []).map((inv: any) => {
+        const id = this.resolveItemId(inv.itemId);
+        return {
+          ...inv,
+          itemId: id,
+          itemName: nameMap.get(id) ?? null,
+        };
+      }),
+    })) as Machine[];
   }
 
   async findAll(
@@ -416,13 +511,22 @@ export class MachinesService implements OnModuleInit {
     if (clientId) filter.clientId = clientId;
     if (agentId) filter.agentId = agentId;
     if (orgId) filter.orgId = orgId;
-    return this.machineModel.find(filter).lean().exec();
+    const machines = await this.machineModel.find(filter).lean().exec();
+    return this.populateInventoryNames(machines as Machine[]);
   }
 
   async findOne(id: string): Promise<Machine> {
-    const machine = await this.machineModel.findById(id).lean().exec();
+    let machine: Machine | null = null;
+    // Accept both MongoDB ObjectId and custom machineId string (e.g. cm_mn420njq_01vtxhuc)
+    if (isValidObjectId(id)) {
+      machine = await this.machineModel.findById(id).lean().exec();
+    }
+    if (!machine) {
+      machine = await this.machineModel.findOne({ machineId: id }).lean().exec();
+    }
     if (!machine) throw new NotFoundException(`Machine ${id} not found`);
-    return machine;
+    const [populated] = await this.populateInventoryNames([machine as Machine]);
+    return populated;
   }
 
   async findByMachineId(machineId: string): Promise<Machine> {
@@ -431,7 +535,8 @@ export class MachinesService implements OnModuleInit {
       .lean()
       .exec();
     if (!machine) throw new NotFoundException(`Machine ${machineId} not found`);
-    return machine;
+    const [populated] = await this.populateInventoryNames([machine as Machine]);
+    return populated;
   }
 
   async update(id: string, dto: UpdateMachineDto): Promise<Machine> {
@@ -638,20 +743,22 @@ export class MachinesService implements OnModuleInit {
    * Auto-cancel orders stuck in pending/dispensing for more than 3 minutes.
    * Runs every minute. Refunds wallet and restores food-machine batch stock.
    */
-  @Cron('* * * * *')
+  @Cron('*/15 * * * * *')
   async cancelTimedOutOrders(): Promise<void> {
-    const cutoff = new Date(Date.now() - 3 * 60 * 1000);
+    const cutoff = new Date(Date.now() - 30 * 1000);
     const stuckOrders = await this.orderModel
       .find({
         status: { $in: ['pending', 'dispensing'] },
         createdAt: { $lt: cutoff },
       })
+      .limit(50)
       .exec();
 
     for (const order of stuckOrders) {
       order.status = 'failed';
       order.failureReason = 'Order timed out — machine did not confirm';
       await order.save();
+      await this.setMachineBusy(order.machineId, false);
 
       await this.walletService.refund(
         order.userId,
@@ -743,6 +850,12 @@ export class MachinesService implements OnModuleInit {
       { machineId },
       { $inc: { totalOrders: 1, totalRevenue: amount } },
     );
+  }
+
+  async setMachineBusy(machineId: string, busy: boolean): Promise<void> {
+    await this.machineModel
+      .findOneAndUpdate({ machineId }, { $set: { isBusy: busy } })
+      .exec();
   }
 
   // ─── Food Batch Management ───────────────────────────────────────────────────
@@ -1046,7 +1159,12 @@ export class MachinesService implements OnModuleInit {
     const machine = await this.machineModel
       .findOneAndUpdate(
         { machineId },
-        { $pull: { itemIds: itemId } },
+        {
+          $pull: {
+            itemIds: itemId,
+            inventory: { itemId },
+          },
+        },
         { new: true },
       )
       .lean()
@@ -1063,42 +1181,55 @@ export class MachinesService implements OnModuleInit {
    * Equivalent to old getMachineMobile(). Public endpoint — no auth required.
    */
   async getMachineMenu(machineId: string): Promise<object[]> {
-    const machine = await this.findByMachineId(machineId);
-    const isFoodMachine = (machine as any).machineType === 'food';
+    // Non-lean: Mongoose coerces ObjectId stored in String-typed fields → hex string.
+    // .lean() leaves BSON ObjectId as a raw object which breaks String comparisons.
+    const raw = await this.machineModel
+      .findOne({ machineId })
+      .select('machineType inventory batches itemIds calibration')
+      .exec();
+    if (!raw) throw new NotFoundException(`Machine ${machineId} not found`);
 
-    // Collect item IDs: explicit assignment + inventory/batch fallback
-    const assignedIds: string[] = (machine as any).itemIds ?? [];
+    const isFoodMachine = (raw as any).machineType === 'food';
+
+    // String(id) works because Mongoose coerces String-typed fields on hydration
+    const assignedIds: string[] = ((raw as any).itemIds ?? [])
+      .map((id: any) => String(id))
+      .filter((id: string) => id && isValidObjectId(id));
+
     const inventoryIds: string[] = isFoodMachine
-      ? ((machine as any).batches as any[])
-          .filter((b) => b.status === 'active')
-          .map((b) => b.itemId)
-      : ((machine as any).inventory as any[]).map((i) => i.itemId);
+      ? ((raw as any).batches ?? [])
+          .filter((b: any) => b.status === 'active')
+          .map((b: any) => String(b.itemId))
+          .filter((id: string) => id && isValidObjectId(id))
+      : (raw.inventory ?? [])
+          .map((i: any) => String(i.itemId))
+          .filter((id: string) => id && isValidObjectId(id));
 
     const allIds = [...new Set([...assignedIds, ...inventoryIds])];
     if (allIds.length === 0) return [];
 
     const items = await this.itemModel
-      .find({ _id: { $in: allIds }, isAvailable: true })
+      .find({ _id: { $in: allIds }, isAvailable: { $ne: false } })
       .exec();
 
     return items.map((item) => {
       const id = item._id.toString();
 
       // Stock: coffee = inventory currentStock, food = sum of active batch quantities
-      const inv = ((machine as any).inventory as any[])?.find(
-        (i) => i.itemId === id,
+      const inv = (raw.inventory ?? []).find(
+        (i: any) => String(i.itemId) === id,
       );
-      const activeBatches = (((machine as any).batches as any[]) ?? []).filter(
-        (b) => b.itemId === id && b.status === 'active',
+      const activeBatches = ((raw as any)?.batches ?? []).filter(
+        (b: any) => String(b.itemId) === id && b.status === 'active',
       );
       const currentStock =
-        inv?.currentStock ??
+        (inv as any)?.currentStock ??
         activeBatches.reduce((s: number, b: any) => s + b.quantity, 0);
 
       // Enrich coffee cup sizes with machine-specific calibration timers
       const cupSizes = item.cupSizes.map((cs) => {
-        const calib = (((machine as any).calibration as any[]) ?? []).find(
-          (c) => c.itemId === id && c.cupSize === cs.size,
+        const calib = (((raw as any)?.calibration as any[]) ?? []).find(
+          (c: any) => String(c.itemId) === id && c.cupSize === cs.size,
         );
         return {
           size: cs.size,
@@ -1107,6 +1238,16 @@ export class MachinesService implements OnModuleInit {
           timerOfWater: calib?.timerOfWater ?? cs.timerOfWater,
         };
       });
+
+      // Nozzle: coffee → inventory[].nozzle (fallback: calibration[].nozzle); food → first active batch nozzleId
+      const nozzle: number =
+        (raw as any).machineType === 'food'
+          ? (activeBatches[0]?.nozzleId ?? 1)
+          : ((inv as any)?.nozzle ??
+             ((raw as any)?.calibration as any[] ?? []).find(
+               (c: any) => String(c.itemId) === id,
+             )?.nozzle ??
+             1);
 
       return {
         _id: item._id,
@@ -1120,6 +1261,7 @@ export class MachinesService implements OnModuleInit {
         currentStock,
         inStock: currentStock > 0,
         bayesianRating: item.bayesianRating,
+        nozzle,
       };
     });
   }
@@ -1178,26 +1320,31 @@ export class MachinesService implements OnModuleInit {
   }
 
   /**
-   * Every 10 seconds — mirrors old backend timer.js offlineMachineWhenNotConnected().
-   * If a machine has not sent an MQTT heartbeat in the last 10 seconds, mark it offline.
+   * Every 30 seconds — if a machine has not sent an MQTT heartbeat in the last 30 seconds, mark it offline.
+   * Guard prevents concurrent runs from piling up DB operations.
    */
-  @Cron('*/10 * * * * *')
+  @Cron('*/30 * * * * *')
   async markOfflineSilentMachines(): Promise<void> {
-    const cutoff = new Date(Date.now() - 10_000);
-    // Exclude machines in sleep mode or flush mode — both stop heartbeats intentionally
-    const result = await this.machineModel.updateMany(
-      {
-        isOnline: true,
-        sleepMode: { $ne: true },
-        flushMode: { $ne: true },
-        lastSeen: { $lt: cutoff },
-      },
-      { $set: { isOnline: false, error: 'MACHINE_NOT_CONNECTED' } },
-    );
-    if (result.modifiedCount > 0) {
-      this.logger.warn(
-        `Marked ${result.modifiedCount} machine(s) offline (no MQTT heartbeat > 10s)`,
+    if (this.offlineCheckRunning) return;
+    this.offlineCheckRunning = true;
+    try {
+      const cutoff = new Date(Date.now() - 30_000);
+      const result = await this.machineModel.updateMany(
+        {
+          isOnline: true,
+          sleepMode: { $ne: true },
+          flushMode: { $ne: true },
+          lastSeen: { $lt: cutoff },
+        },
+        { $set: { isOnline: false, error: 'MACHINE_NOT_CONNECTED' } },
       );
+      if (result.modifiedCount > 0) {
+        this.logger.warn(
+          `Marked ${result.modifiedCount} machine(s) offline (no MQTT heartbeat > 30s)`,
+        );
+      }
+    } finally {
+      this.offlineCheckRunning = false;
     }
   }
 }

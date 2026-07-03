@@ -26,6 +26,7 @@ import { CreateUserDto } from '../users/dto/create-user.dto';
 import { CreateMembershipDto } from '../memberships/dto/create-membership.dto';
 import { AgentTopupDto } from '../wallet/dto/agent-topup.dto';
 import { FailOrderDto } from './dto/fail-order.dto';
+import { UpdateMachineStockDto } from './dto/update-machine-stock.dto';
 
 /**
  * AgentsController — HTTP routing layer for agent-facing operations.
@@ -94,6 +95,47 @@ export class AgentsController {
     @Query('type') type: 'daily' | 'weekly' = 'daily',
   ) {
     return this.agentsService.triggerFlush(machineId, type);
+  }
+
+  // ─── Machine Stock ───────────────────────────────────────────────────────────
+
+  /**
+   * GET /agents/machines/:machineId/stock
+   * Returns StockItem[] for a machine assigned to this agent.
+   * Each item includes: totalStock, reserved (pending/dispensing), delivered (completed), price, unit.
+   */
+  @Get('machines/:machineId/stock')
+  @ApiOperation({ summary: 'Get stock items for an assigned machine' })
+  @ApiParam({ name: 'machineId', description: 'Machine ID (e.g. cm_xxx or vd_xxx)' })
+  @ApiOkResponse({ description: 'StockItem[] matching the Flutter StockItem model' })
+  getMachineStock(@Param('machineId') machineId: string, @Request() req) {
+    return this.agentsService.getMachineStock(req.user.id, machineId);
+  }
+
+  /**
+   * PATCH /agents/machines/:machineId/stock/:itemId
+   * Load or unload stock for one item on an assigned machine.
+   * Coffee: quantity is in cups (converted to grams internally).
+   * Food:   quantity is in units; nozzleId required when action=load.
+   */
+  @Patch('machines/:machineId/stock/:itemId')
+  @ApiOperation({ summary: 'Load or unload stock for an item on an assigned machine' })
+  @ApiParam({ name: 'machineId', description: 'Machine ID' })
+  @ApiParam({ name: 'itemId', description: 'Item MongoDB _id' })
+  @ApiOkResponse({ description: '{ message: string }' })
+  @HttpCode(HttpStatus.OK)
+  updateMachineStock(
+    @Param('machineId') machineId: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: UpdateMachineStockDto,
+    @Request() req,
+  ) {
+    return this.agentsService.updateMachineStock(
+      req.user.id,
+      machineId,
+      itemId,
+      dto,
+    );
   }
 
   // ─── Orders ──────────────────────────────────────────────────────────────────
@@ -170,6 +212,24 @@ export class AgentsController {
   }
 
   // ─── Customer Management ─────────────────────────────────────────────────────
+
+  /**
+   * GET /agents/customers/qr/:customerId
+   * Resolves a QR-code customerId to userId + walletId.
+   * Used by the agent app before a cash top-up.
+   */
+  @Get('customers/qr/:customerId')
+  @ApiOperation({ summary: 'Resolve a customer QR code to userId + walletId' })
+  @ApiParam({
+    name: 'customerId',
+    description: 'Human-readable customer ID from QR code (e.g. CUS-20240101-123456)',
+  })
+  @ApiOkResponse({
+    description: '{ userId, customerId, customerName, phone, walletId }',
+  })
+  getCustomerByQr(@Param('customerId') customerId: string) {
+    return this.agentsService.getCustomerByQr(customerId);
+  }
 
   /**
    * POST /agents/customers
@@ -290,13 +350,14 @@ export class AgentsController {
   })
   @HttpCode(HttpStatus.CREATED)
   fileInspection(@Request() req, @Body() body: any) {
+    const b = body ?? {};
     return this.agentsService.fileInspection(
       req.user.id,
-      body.machineId,
-      body.passed ?? true,
-      body.failedChecks ?? [],
-      body.notes ?? '',
-      body.severity ?? 'medium',
+      b.machineId,
+      b.passed ?? true,
+      b.failedChecks ?? [],
+      b.notes ?? '',
+      b.severity ?? 'medium',
     );
   }
 

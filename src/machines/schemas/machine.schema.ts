@@ -168,6 +168,9 @@ export class Machine {
   flushMode: boolean;
 
   @Prop({ type: Boolean, default: false })
+  isBusy: boolean;
+
+  @Prop({ type: Boolean, default: false })
   autoFlushEnabled: boolean;
 
   @Prop({ type: String, default: null })
@@ -175,6 +178,16 @@ export class Machine {
 
   @Prop({ type: String, default: null })
   error: string; // 'READY_STATE' or error code from machine
+
+  // ─── Old-BE compatible fields ─────────────────────────────────────────────────
+  @Prop({ type: String, default: null })
+  qrId: string; // mirrors old BE qr_id — auto-set to machineId on create
+
+  @Prop({ type: Date, default: Date.now })
+  lastMaintenance: Date; // mirrors old BE last_maintenance
+
+  @Prop({ type: Date, default: null })
+  expireAt: Date; // mirrors old BE expire_at
 
   @Prop({ default: now })
   createdAt: Date;

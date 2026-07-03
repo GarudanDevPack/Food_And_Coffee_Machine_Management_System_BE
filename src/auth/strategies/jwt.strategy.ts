@@ -11,10 +11,12 @@ import { AllConfigType } from '../../config/config.type';
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(configService: ConfigService<AllConfigType>) {
     super({
-      // Cookie-first; falls back to Bearer header for Swagger/mobile clients
+      // Bearer-first so an explicit Authorization header (admin panel localStorage)
+      // always wins over a stale HttpOnly cookie left from a previous session.
+      // Falls back to cookie for browser sessions that have no localStorage token.
       jwtFromRequest: ExtractJwt.fromExtractors([
-        (req: Request) => req?.cookies?.accessToken ?? null,
         ExtractJwt.fromAuthHeaderAsBearerToken(),
+        (req: Request) => req?.cookies?.accessToken ?? null,
       ]),
       secretOrKey: configService.getOrThrow('auth.secret', { infer: true }),
       passReqToCallback: false,

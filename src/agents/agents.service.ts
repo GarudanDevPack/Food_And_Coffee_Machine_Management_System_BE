@@ -1,4 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ForbiddenException,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { MachinesService } from '../machines/machines.service';
@@ -16,6 +22,9 @@ import {
   AgentLogAction,
   AgentLogDocument,
 } from './schemas/agent-log.schema';
+import { Item, ItemDocument } from '../items/schemas/item.schema';
+import { Order, OrderDocument } from '../orders/schemas/order.schema';
+import { UpdateMachineStockDto } from './dto/update-machine-stock.dto';
 
 /** Shape of the agent dashboard KPI response */
 export interface AgentDashboardResult {
@@ -52,6 +61,10 @@ export class AgentsService {
     private readonly alertsService: AlertsService,
     @InjectModel(AgentLog.name)
     private readonly agentLogModel: Model<AgentLogDocument>,
+    @InjectModel(Item.name)
+    private readonly itemModel: Model<ItemDocument>,
+    @InjectModel(Order.name)
+    private readonly orderModel: Model<OrderDocument>,
   ) {}
 
   // ─── Dashboard ───────────────────────────────────────────────────────────────
@@ -67,10 +80,9 @@ export class AgentsService {
    * @param agentId - MongoDB _id of the calling agent
    */
   async getDashboard(agentId: string): Promise<AgentDashboardResult> {
-    const [machines, orders] = await Promise.all([
-      this.machinesService.findAll(undefined, agentId),
-      this.ordersService.findAll(undefined, undefined, undefined, agentId),
-    ]);
+    const machines = await this.machinesService.findAll(undefined, agentId);
+    const machineIds = machines.map((m: any) => m.machineId);
+    const orders = await this.ordersService.findAllByMachineIds(machineIds);
 
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
@@ -133,8 +145,10 @@ export class AgentsService {
    * @param agentId - MongoDB _id of the calling agent
    * @param status  - Optional status filter (pending | dispensing | completed | failed)
    */
-  getOrders(agentId: string, status?: string) {
-    return this.ordersService.findAll(undefined, undefined, status, agentId);
+  async getOrders(agentId: string, status?: string) {
+    const machines = await this.machinesService.findAll(undefined, agentId);
+    const machineIds = machines.map((m: any) => m.machineId);
+    return this.ordersService.findAllByMachineIds(machineIds, status);
   }
 
   /**
@@ -150,12 +164,9 @@ export class AgentsService {
    * @param status  - Optional status filter
    */
   async getMobileOrders(agentId: string, status?: string) {
-    const orders = (await this.ordersService.findAll(
-      undefined,
-      undefined,
-      status,
-      agentId,
-    )) as any[];
+    const machines = await this.machinesService.findAll(undefined, agentId);
+    const machineIds = machines.map((m: any) => m.machineId);
+    const orders = (await this.ordersService.findAllByMachineIds(machineIds, status)) as any[];
 
     if (!orders.length) return [];
 
@@ -260,6 +271,27 @@ export class AgentsService {
   }
 
   /**
+   * Resolves a customer QR code (customerId) to userId + walletId.
+   * Used by the agent app before performing a cash top-up.
+   */
+  async getCustomerByQr(customerId: string): Promise<object> {
+    const user = (await this.usersService.findByCustomerId(customerId)) as any;
+    if (!user) throw new NotFoundException(`Customer ${customerId} not found`);
+
+    const wallet = await this.walletService.getWallet(
+      user.id ?? user._id?.toString(),
+    );
+
+    return {
+      userId: user.id ?? user._id?.toString(),
+      customerId: user.customerId,
+      customerName: `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim(),
+      phone: user.phone ?? null,
+      walletId: (wallet as any).walletId ?? null,
+    };
+  }
+
+  /**
    * Subscribes a customer to a membership plan on the agent's behalf.
    * The subscription fee is deducted from the *customer's* wallet.
    *
@@ -306,30 +338,56 @@ export class AgentsService {
     skip = 0,
     category?: string,
   ) {
-    return this.walletService.getAllTransactionsEnriched(
+    const txs = (await this.walletService.getAllTransactionsEnriched(
       limit,
       skip,
       undefined,
       category,
       agentId,
-    );
+    )) as any[];
+    return txs.map((tx) => ({
+      customerId: tx.customerId,
+      amount: tx.amount,
+      status: tx.status,
+      topupMethod: tx.paymentMethod,
+      dateTime: tx.date,
+      walletId: tx.walletId,
+    }));
   }
 
   async walletTopup(agentId: string, dto: AgentTopupDto) {
-    const result = await this.walletService.agentTopup(
+    // Resolve human-readable customerId → MongoDB userId
+    const user = (await this.usersService.findByCustomerId(dto.customerId)) as any;
+    if (!user) throw new NotFoundException(`Customer ${dto.customerId} not found`);
+    const targetUserId = user.id ?? user._id?.toString();
+
+    const tx = (await this.walletService.agentTopup(
       agentId,
-      dto.targetUserId,
+      targetUserId,
       dto.amount,
       dto.note,
-    );
+    )) as any;
     this.logAction(
       agentId,
       'wallet_topup',
-      dto.targetUserId,
+      targetUserId,
       `LKR ${dto.amount}`,
-      { amount: dto.amount, note: dto.note },
+      { amount: dto.amount, note: dto.note, customerId: dto.customerId },
     ).catch(() => {});
-    return result;
+    return {
+      transactionId: tx._id?.toString() ?? tx.id,
+      agentId,
+      customerId: dto.customerId,
+      targetUserId,
+      walletId: tx.walletId ?? null,
+      amount: tx.amount,
+      balanceBefore: tx.balanceBefore,
+      balanceAfter: tx.balanceAfter,
+      status: tx.status,
+      category: tx.category,
+      note: tx.description ?? null,
+      createdAt: tx.createdAt,
+    };
   }
 
   // ─── Inspection ───────────────────────────────────────────────────────────────
@@ -409,5 +467,200 @@ export class AgentsService {
       .limit(100)
       .lean()
       .exec();
+  }
+
+  // ─── Machine Stock ────────────────────────────────────────────────────────────
+
+  /**
+   * Returns StockItem[] for a single machine assigned to this agent.
+   * Coffee machines: one StockItem per inventory entry (unit = cups).
+   * Food machines:   one StockItem per unique active-batch itemId (unit = units).
+   * Each StockItem includes live reserved (pending/dispensing) and delivered (completed) counts.
+   */
+  async getMachineStock(agentId: string, machineId: string): Promise<any[]> {
+    const machine = await this.machinesService.findByMachineId(machineId);
+    if ((machine as any).agentId !== agentId)
+      throw new ForbiddenException('Machine not assigned to you');
+
+    const isFoodMachine = (machine as any).machineType === 'food';
+
+    // Collect itemIds present on this machine
+    let itemIds: string[];
+    if (isFoodMachine) {
+      const batches: any[] = (machine as any).batches ?? [];
+      itemIds = [
+        ...new Set(
+          batches
+            .filter((b) => b.status === 'active')
+            .map((b) => b.itemId),
+        ),
+      ];
+    } else {
+      itemIds = ((machine as any).inventory ?? []).map((i: any) => i.itemId);
+    }
+    if (!itemIds.length) return [];
+
+    // Batch-fetch item master data (name, category, price)
+    const items = await this.itemModel
+      .find({ _id: { $in: itemIds } })
+      .lean()
+      .exec();
+    const itemMap = new Map(
+      items.map((item: any) => [item._id.toString(), item]),
+    );
+
+    // Aggregate reserved (pending/dispensing) and delivered (completed) quantities
+    const [reservedAgg, deliveredAgg] = await Promise.all([
+      this.orderModel.aggregate([
+        {
+          $match: {
+            machineId,
+            itemId: { $in: itemIds },
+            status: { $in: ['pending', 'dispensing'] },
+          },
+        },
+        { $group: { _id: '$itemId', total: { $sum: '$quantity' } } },
+      ]),
+      this.orderModel.aggregate([
+        {
+          $match: {
+            machineId,
+            itemId: { $in: itemIds },
+            status: 'completed',
+          },
+        },
+        { $group: { _id: '$itemId', total: { $sum: '$quantity' } } },
+      ]),
+    ]);
+
+    const reservedMap = new Map(
+      reservedAgg.map((r: any) => [r._id, r.total]),
+    );
+    const deliveredMap = new Map(
+      deliveredAgg.map((d: any) => [d._id, d.total]),
+    );
+
+    if (isFoodMachine) {
+      const batches: any[] = (machine as any).batches ?? [];
+      return itemIds.map((itemId) => {
+        const activeBatches = batches.filter(
+          (b) => b.itemId === itemId && b.status === 'active',
+        );
+        const totalStock = activeBatches.reduce(
+          (s: number, b: any) => s + (b.quantity ?? 0),
+          0,
+        );
+        const item = itemMap.get(itemId) as any;
+        const sampleBatch = activeBatches[0];
+        return {
+          id: itemId,
+          name: sampleBatch?.itemName ?? item?.name ?? itemId,
+          category: item?.category ?? 'General',
+          totalStock,
+          reserved: reservedMap.get(itemId) ?? 0,
+          delivered: deliveredMap.get(itemId) ?? 0,
+          unit: 'units',
+          price: item?.unitPrice ?? 0,
+          createdAt: item?.createdAt ?? null,
+          updatedAt: item?.updatedAt ?? null,
+        };
+      });
+    } else {
+      const inventory: any[] = (machine as any).inventory ?? [];
+      return inventory.map((inv) => {
+        const item = itemMap.get(inv.itemId) as any;
+        const smallestPrice =
+          item?.cupSizes?.length
+            ? Math.min(...item.cupSizes.map((cs: any) => cs.price))
+            : 0;
+        return {
+          id: inv.itemId,
+          name: item?.name ?? inv.itemId,
+          category: item?.category ?? 'General',
+          totalStock: inv.cupcount ?? 0,
+          reserved: reservedMap.get(inv.itemId) ?? 0,
+          delivered: deliveredMap.get(inv.itemId) ?? 0,
+          unit: 'cups',
+          price: smallestPrice,
+          createdAt: item?.createdAt ?? null,
+          updatedAt: item?.updatedAt ?? null,
+        };
+      });
+    }
+  }
+
+  /**
+   * Load or unload stock for a specific item on a machine assigned to this agent.
+   *
+   * Coffee machines (unit = cups):
+   *   load   → adds quantity × gramsPerCup grams; cupcount recalculated by updateInventory
+   *   unload → subtracts quantity × gramsPerCup grams (floors at 0)
+   *
+   * Food machines (unit = units):
+   *   load   → creates a new batch via loadBatch(); nozzleId required
+   *   unload → deducts from the oldest active batch via deductBatchStock()
+   */
+  async updateMachineStock(
+    agentId: string,
+    machineId: string,
+    itemId: string,
+    dto: UpdateMachineStockDto,
+  ): Promise<{ message: string }> {
+    const machine = await this.machinesService.findByMachineId(machineId);
+    if ((machine as any).agentId !== agentId)
+      throw new ForbiddenException('Machine not assigned to you');
+
+    const isFoodMachine = (machine as any).machineType === 'food';
+
+    if (isFoodMachine) {
+      if (dto.action === 'load') {
+        if (!dto.nozzleId)
+          throw new BadRequestException(
+            'nozzleId is required when loading stock on a food machine',
+          );
+        const item = (await this.itemModel
+          .findById(itemId)
+          .lean()
+          .exec()) as any;
+        await this.machinesService.loadBatch(machineId, agentId, {
+          itemId,
+          itemName: dto.itemName ?? item?.name ?? itemId,
+          nozzleId: dto.nozzleId,
+          quantity: dto.quantity,
+          expiryDate:
+            dto.expiryDate ??
+            new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().split('T')[0],
+        });
+      } else {
+        await this.machinesService.deductBatchStock(
+          machineId,
+          itemId,
+          dto.quantity,
+        );
+      }
+    } else {
+      const inv = ((machine as any).inventory ?? []).find(
+        (i: any) => i.itemId === itemId,
+      );
+      if (!inv)
+        throw new NotFoundException(
+          `Item ${itemId} not found in inventory of machine ${machineId}`,
+        );
+      const gramsPerCup = inv.gramsPerCup > 0 ? inv.gramsPerCup : 18;
+      const gramsChange = dto.quantity * gramsPerCup;
+      const newStock =
+        dto.action === 'load'
+          ? inv.currentStock + gramsChange
+          : Math.max(0, inv.currentStock - gramsChange);
+      await this.machinesService.updateInventory(machineId, {
+        itemId,
+        currentStock: newStock,
+        gramsPerCup,
+      });
+    }
+
+    return {
+      message: `Stock ${dto.action === 'load' ? 'loaded' : 'unloaded'} successfully`,
+    };
   }
 }

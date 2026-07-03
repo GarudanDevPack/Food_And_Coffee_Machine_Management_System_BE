@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, now } from 'mongoose';
+import { HydratedDocument } from 'mongoose';
 
 export type OrderDocument = HydratedDocument<Order>;
 
@@ -63,6 +63,13 @@ export class Order {
   })
   status: string;
 
+  @Prop({
+    type: String,
+    enum: ['pending', 'paid', 'completed', 'refunded'],
+    default: 'pending',
+  })
+  paymentStatus: string;
+
   @Prop({ type: String })
   transactionId: string;
 
@@ -71,7 +78,7 @@ export class Order {
   promotionId?: string | null;
 
   /** Promotion discount % applied (best-discount-wins vs membership) */
-  @Prop({ type: Number, default: null })
+  @Prop({ type: Number, min: 0, max: 100, default: null })
   promotionDiscount?: number | null;
 
   @Prop({ type: Boolean, default: false })
@@ -96,11 +103,10 @@ export class Order {
   @Prop({ type: String, default: null })
   specialInstructions?: string | null;
 
-  @Prop({ default: now })
-  createdAt: Date;
-
-  @Prop({ default: now })
-  updatedAt: Date;
+  // Managed by Mongoose timestamps: true — do not add @Prop here or the
+  // default fires at schema-load time instead of document-creation time.
+  createdAt!: Date;
+  updatedAt!: Date;
 }
 
 export const OrderSchema = SchemaFactory.createForClass(Order);
@@ -108,4 +114,9 @@ OrderSchema.index({ userId: 1 });
 OrderSchema.index({ machineId: 1 });
 OrderSchema.index({ status: 1 });
 OrderSchema.index({ createdAt: -1 });
-OrderSchema.index({ orderId: 1 }, { sparse: true });
+// unique: prevent duplicate human-readable order IDs
+OrderSchema.index({ orderId: 1 }, { sparse: true, unique: true });
+// unique: prevent double-recording the same wallet transaction on an order
+OrderSchema.index({ transactionId: 1 }, { sparse: true, unique: true });
+// compound: speeds up "all orders for this user on this machine" queries
+OrderSchema.index({ userId: 1, machineId: 1 });
