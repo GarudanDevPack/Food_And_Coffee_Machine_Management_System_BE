@@ -261,12 +261,20 @@ export class WalletService {
     const userMap = new Map(users.map((u) => [u._id.toString(), u]));
 
     // Batch-fetch wallets to resolve stored MongoDB _id → human-readable walletId
-    const walletMongoIds = [...new Set(txs.map((t) => t.walletId).filter(Boolean))];
+    const walletMongoIds = [
+      ...new Set(txs.map((t) => t.walletId).filter(Boolean)),
+    ];
     const wallets = walletMongoIds.length
-      ? await this.walletModel.find({ _id: { $in: walletMongoIds } }).lean().exec()
+      ? await this.walletModel
+          .find({ _id: { $in: walletMongoIds } })
+          .lean()
+          .exec()
       : [];
     const walletIdMap = new Map(
-      wallets.map((w: any) => [w._id.toString(), (w.walletId as string) ?? null]),
+      wallets.map((w: any) => [
+        w._id.toString(),
+        (w.walletId as string) ?? null,
+      ]),
     );
 
     const paymentMethodMap: Record<string, string> = {

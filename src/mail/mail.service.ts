@@ -32,8 +32,12 @@ export class MailService {
     }
 
     const domain = (
-      this.configService.getOrThrow('app.frontendDomain', { infer: true }) as string
-    ).split(',')[0].trim();
+      this.configService.getOrThrow('app.frontendDomain', {
+        infer: true,
+      }) as string
+    )
+      .split(',')[0]
+      .trim();
     const url = new URL(domain + '/confirm-email');
     url.searchParams.set('hash', mailData.data.hash);
 
@@ -83,8 +87,12 @@ export class MailService {
     }
 
     const domain = (
-      this.configService.getOrThrow('app.frontendDomain', { infer: true }) as string
-    ).split(',')[0].trim();
+      this.configService.getOrThrow('app.frontendDomain', {
+        infer: true,
+      }) as string
+    )
+      .split(',')[0]
+      .trim();
     const url = new URL(domain + '/password-change');
     url.searchParams.set('hash', mailData.data.hash);
     url.searchParams.set('expires', mailData.data.tokenExpires.toString());
@@ -134,8 +142,12 @@ export class MailService {
     }
 
     const domain = (
-      this.configService.getOrThrow('app.frontendDomain', { infer: true }) as string
-    ).split(',')[0].trim();
+      this.configService.getOrThrow('app.frontendDomain', {
+        infer: true,
+      }) as string
+    )
+      .split(',')[0]
+      .trim();
     const url = new URL(domain + '/confirm-new-email');
     url.searchParams.set('hash', mailData.data.hash);
 

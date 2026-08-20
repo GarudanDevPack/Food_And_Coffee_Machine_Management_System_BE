@@ -166,7 +166,10 @@ export class AgentsService {
   async getMobileOrders(agentId: string, status?: string) {
     const machines = await this.machinesService.findAll(undefined, agentId);
     const machineIds = machines.map((m: any) => m.machineId);
-    const orders = (await this.ordersService.findAllByMachineIds(machineIds, status)) as any[];
+    const orders = (await this.ordersService.findAllByMachineIds(
+      machineIds,
+      status,
+    )) as any[];
 
     if (!orders.length) return [];
 
@@ -357,8 +360,11 @@ export class AgentsService {
 
   async walletTopup(agentId: string, dto: AgentTopupDto) {
     // Resolve human-readable customerId → MongoDB userId
-    const user = (await this.usersService.findByCustomerId(dto.customerId)) as any;
-    if (!user) throw new NotFoundException(`Customer ${dto.customerId} not found`);
+    const user = (await this.usersService.findByCustomerId(
+      dto.customerId,
+    )) as any;
+    if (!user)
+      throw new NotFoundException(`Customer ${dto.customerId} not found`);
     const targetUserId = user.id ?? user._id?.toString();
 
     const tx = (await this.walletService.agentTopup(
@@ -367,13 +373,11 @@ export class AgentsService {
       dto.amount,
       dto.note,
     )) as any;
-    this.logAction(
-      agentId,
-      'wallet_topup',
-      targetUserId,
-      `LKR ${dto.amount}`,
-      { amount: dto.amount, note: dto.note, customerId: dto.customerId },
-    ).catch(() => {});
+    this.logAction(agentId, 'wallet_topup', targetUserId, `LKR ${dto.amount}`, {
+      amount: dto.amount,
+      note: dto.note,
+      customerId: dto.customerId,
+    }).catch(() => {});
     return {
       transactionId: tx._id?.toString() ?? tx.id,
       agentId,
@@ -490,9 +494,7 @@ export class AgentsService {
       const batches: any[] = (machine as any).batches ?? [];
       itemIds = [
         ...new Set(
-          batches
-            .filter((b) => b.status === 'active')
-            .map((b) => b.itemId),
+          batches.filter((b) => b.status === 'active').map((b) => b.itemId),
         ),
       ];
     } else {
@@ -533,9 +535,7 @@ export class AgentsService {
       ]),
     ]);
 
-    const reservedMap = new Map(
-      reservedAgg.map((r: any) => [r._id, r.total]),
-    );
+    const reservedMap = new Map(reservedAgg.map((r: any) => [r._id, r.total]));
     const deliveredMap = new Map(
       deliveredAgg.map((d: any) => [d._id, d.total]),
     );
@@ -569,10 +569,9 @@ export class AgentsService {
       const inventory: any[] = (machine as any).inventory ?? [];
       return inventory.map((inv) => {
         const item = itemMap.get(inv.itemId) as any;
-        const smallestPrice =
-          item?.cupSizes?.length
-            ? Math.min(...item.cupSizes.map((cs: any) => cs.price))
-            : 0;
+        const smallestPrice = item?.cupSizes?.length
+          ? Math.min(...item.cupSizes.map((cs: any) => cs.price))
+          : 0;
         return {
           id: inv.itemId,
           name: item?.name ?? inv.itemId,
@@ -629,7 +628,9 @@ export class AgentsService {
           quantity: dto.quantity,
           expiryDate:
             dto.expiryDate ??
-            new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().split('T')[0],
+            new Date(Date.now() + 7 * 24 * 3600 * 1000)
+              .toISOString()
+              .split('T')[0],
         });
       } else {
         await this.machinesService.deductBatchStock(

@@ -64,7 +64,10 @@ export class LegacyUsersController {
    */
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'POST /api/login — admin panel: email+password login, sets cookies' })
+  @ApiOperation({
+    summary:
+      'POST /api/login — admin panel: email+password login, sets cookies',
+  })
   @ApiBody({
     schema: {
       type: 'object',
@@ -95,11 +98,16 @@ export class LegacyUsersController {
       path: '/',
     });
 
-    const refreshExpiresStr = (this.configService.getOrThrow(
-      'auth.refreshExpires',
-      { infer: true },
-    ) as string) || '30d';
-    const durationUnits: Record<string, number> = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 };
+    const refreshExpiresStr =
+      (this.configService.getOrThrow('auth.refreshExpires', {
+        infer: true,
+      }) as string) || '30d';
+    const durationUnits: Record<string, number> = {
+      d: 86_400_000,
+      h: 3_600_000,
+      m: 60_000,
+      s: 1_000,
+    };
     const durationMatch = /^(\d+)([dhms])$/.exec(refreshExpiresStr);
     const refreshMs = durationMatch
       ? parseInt(durationMatch[1], 10) * durationUnits[durationMatch[2]]
@@ -129,8 +137,10 @@ export class LegacyUsersController {
    */
   @Post('logout')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'POST /api/logout — admin panel: clear auth cookies' })
-  async logout(@Res({ passthrough: true }) res: ExpressResponse) {
+  @ApiOperation({
+    summary: 'POST /api/logout — admin panel: clear auth cookies',
+  })
+  logout(@Res({ passthrough: true }) res: ExpressResponse) {
     res.clearCookie('accessToken', { path: '/' });
     res.clearCookie('refreshToken', { path: '/' });
     return { success: true, message: 'Logged out successfully' };

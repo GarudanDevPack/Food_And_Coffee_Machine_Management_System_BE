@@ -16,7 +16,14 @@ import { OrganizationsModule } from '../organizations/organizations.module';
  * Used by the mobile app. Routes are excluded from the global /api prefix.
  */
 @Module({
-  imports: [UsersModule, WalletModule, OrdersModule, MachinesModule, AuthModule, OrganizationsModule],
+  imports: [
+    UsersModule,
+    WalletModule,
+    OrdersModule,
+    MachinesModule,
+    AuthModule,
+    OrganizationsModule,
+  ],
   controllers: [
     LegacyUsersController,
     LegacyWalletController,

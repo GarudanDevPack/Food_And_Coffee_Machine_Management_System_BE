@@ -26,8 +26,15 @@ export class MachineQrController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: 'GET /api/v1/getmachinelog — QR scan: machine details in Flutter format' })
-  @ApiQuery({ name: 'id', description: 'machineId (e.g. cm_mn420njq_01vtxhuc)', required: true })
+  @ApiOperation({
+    summary:
+      'GET /api/v1/getmachinelog — QR scan: machine details in Flutter format',
+  })
+  @ApiQuery({
+    name: 'id',
+    description: 'machineId (e.g. cm_mn420njq_01vtxhuc)',
+    required: true,
+  })
   async getMachineLog(@Query('id') id: string) {
     if (!id) throw new BadRequestException('Machine ID is required');
 
@@ -44,10 +51,15 @@ export class MachineQrController {
         if (user) {
           clientData = {
             id: String(user.id),
-            name: [user.firstName, user.lastName].filter(Boolean).join(' ') || (user as any).email || '',
+            name:
+              [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+              (user as any).email ||
+              '',
           };
         }
-      } catch { /* non-fatal */ }
+      } catch {
+        /* non-fatal */
+      }
     }
 
     // ── Organization lookup ───────────────────────────────────────────────────
@@ -61,7 +73,9 @@ export class MachineQrController {
             name: org.name,
           };
         }
-      } catch { /* non-fatal */ }
+      } catch {
+        /* non-fatal */
+      }
     }
 
     // ── Inventory — coffee uses inventory[], food uses batches[] ──────────────
@@ -77,7 +91,7 @@ export class MachineQrController {
             _id: String(b._id ?? b.batchId ?? ''),
           }))
         : (m.inventory ?? []).map((inv: any) => ({
-            item_id: String(inv.itemId),   // ObjectId → string
+            item_id: String(inv.itemId), // ObjectId → string
             packetofstock: 0,
             stock: inv.currentStock ?? 0,
             cupcount: inv.cupcount ?? 0,
@@ -90,7 +104,13 @@ export class MachineQrController {
     const itemIds =
       m.machineType === 'food'
         ? [...new Set((m.batches ?? []).map((b: any) => String(b.itemId)))]
-        : [...new Set((m.inventory ?? []).map((inv: any) => String(inv.itemId)).filter(Boolean))];
+        : [
+            ...new Set(
+              (m.inventory ?? [])
+                .map((inv: any) => String(inv.itemId))
+                .filter(Boolean),
+            ),
+          ];
 
     return {
       success: true,
@@ -101,8 +121,8 @@ export class MachineQrController {
         client_id: clientData,
         org_id: orgData,
         sensor: {
-          temp:        m.sensor?.temp  ?? null,
-          water:       m.sensor?.water ?? null,
+          temp: m.sensor?.temp ?? null,
+          water: m.sensor?.water ?? null,
           powderlevel: m.sensor?.powderlevel ?? [],
         },
         item_id: itemIds,
@@ -132,8 +152,14 @@ export class MachineMenuController {
   constructor(private readonly machinesService: MachinesService) {}
 
   @Get()
-  @ApiOperation({ summary: 'GET /api/v1/getmachinesitems — items available on a machine' })
-  @ApiQuery({ name: 'id', description: 'machineId (e.g. cm_mn420njq_01vtxhuc)', required: true })
+  @ApiOperation({
+    summary: 'GET /api/v1/getmachinesitems — items available on a machine',
+  })
+  @ApiQuery({
+    name: 'id',
+    description: 'machineId (e.g. cm_mn420njq_01vtxhuc)',
+    required: true,
+  })
   async getMachineItems(@Query('id') id: string) {
     if (!id) throw new NotFoundException('Machine ID is required');
     const menu = await this.machinesService.getMachineMenu(id);

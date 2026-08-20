@@ -28,7 +28,12 @@ export class OrdersController {
    * - Customer: places for themselves (no targetUserId needed)
    * - Agent: must include targetUserId in body to place on behalf of a customer
    */
-  @JwtAuth(RoleEnum.customer, RoleEnum.agent, RoleEnum.super_admin, RoleEnum.admin)
+  @JwtAuth(
+    RoleEnum.customer,
+    RoleEnum.agent,
+    RoleEnum.super_admin,
+    RoleEnum.admin,
+  )
   @Post()
   @HttpCode(HttpStatus.CREATED)
   placeOrder(@Request() req, @Body() dto: CreateOrderDto) {

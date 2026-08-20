@@ -106,8 +106,13 @@ export class AgentsController {
    */
   @Get('machines/:machineId/stock')
   @ApiOperation({ summary: 'Get stock items for an assigned machine' })
-  @ApiParam({ name: 'machineId', description: 'Machine ID (e.g. cm_xxx or vd_xxx)' })
-  @ApiOkResponse({ description: 'StockItem[] matching the Flutter StockItem model' })
+  @ApiParam({
+    name: 'machineId',
+    description: 'Machine ID (e.g. cm_xxx or vd_xxx)',
+  })
+  @ApiOkResponse({
+    description: 'StockItem[] matching the Flutter StockItem model',
+  })
   getMachineStock(@Param('machineId') machineId: string, @Request() req) {
     return this.agentsService.getMachineStock(req.user.id, machineId);
   }
@@ -119,7 +124,9 @@ export class AgentsController {
    * Food:   quantity is in units; nozzleId required when action=load.
    */
   @Patch('machines/:machineId/stock/:itemId')
-  @ApiOperation({ summary: 'Load or unload stock for an item on an assigned machine' })
+  @ApiOperation({
+    summary: 'Load or unload stock for an item on an assigned machine',
+  })
   @ApiParam({ name: 'machineId', description: 'Machine ID' })
   @ApiParam({ name: 'itemId', description: 'Item MongoDB _id' })
   @ApiOkResponse({ description: '{ message: string }' })
@@ -222,7 +229,8 @@ export class AgentsController {
   @ApiOperation({ summary: 'Resolve a customer QR code to userId + walletId' })
   @ApiParam({
     name: 'customerId',
-    description: 'Human-readable customer ID from QR code (e.g. CUS-20240101-123456)',
+    description:
+      'Human-readable customer ID from QR code (e.g. CUS-20240101-123456)',
   })
   @ApiOkResponse({
     description: '{ userId, customerId, customerName, phone, walletId }',

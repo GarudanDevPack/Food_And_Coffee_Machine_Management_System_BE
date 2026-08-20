@@ -374,9 +374,7 @@ export class AuthController {
    */
   @Post('phone/reset-password')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async phoneResetPassword(
-    @Body() dto: PhoneResetPasswordDto,
-  ): Promise<void> {
+  async phoneResetPassword(@Body() dto: PhoneResetPasswordDto): Promise<void> {
     return this.service.phoneResetPassword(dto.phone, dto.code, dto.password);
   }
 }

@@ -40,28 +40,32 @@ export class LegacyMobileController {
    */
   @Post('createorder')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'POST /api/v1/createorder — mobile app creates order' })
+  @ApiOperation({
+    summary: 'POST /api/v1/createorder — mobile app creates order',
+  })
   @ApiBody({
     schema: {
       example: {
         client: { id: 1, name: 'QFOX Client' },
-        org:    { id: 1, name: 'QFOX Colombo Hub' },
-        user:   { id: '6a168654dc5e7b7504bbc4dd', name: 'John' },
+        org: { id: 1, name: 'QFOX Colombo Hub' },
+        user: { id: '6a168654dc5e7b7504bbc4dd', name: 'John' },
         machine_id: 'cm_mn420njq_01vtxhuc',
-        items: [{
-          item_id:       '69bc282675011b08dcfcbfda',
-          item_name:     'Cappuccino',
-          nozzle:        '',
-          qty:           1,
-          remaining_qty: 1,
-          vol:           '120ml',
-          status:        'pending',
-        }],
-        total_qty:      1,
-        items_count:    1,
-        price:          180.0,
-        currency:       'LKR',
-        status:         'pending',
+        items: [
+          {
+            item_id: '69bc282675011b08dcfcbfda',
+            item_name: 'Cappuccino',
+            nozzle: '',
+            qty: 1,
+            remaining_qty: 1,
+            vol: '120ml',
+            status: 'pending',
+          },
+        ],
+        total_qty: 1,
+        items_count: 1,
+        price: 180.0,
+        currency: 'LKR',
+        status: 'pending',
         payment_status: 'paid',
       },
     },
@@ -71,8 +75,15 @@ export class LegacyMobileController {
   }
 
   @Get('getmachinelog')
-  @ApiOperation({ summary: 'GET /api/v1/getmachinelog — QR scan: get machine details in old mobile format' })
-  @ApiQuery({ name: 'id', description: 'machineId (e.g. MCH-001)', required: true })
+  @ApiOperation({
+    summary:
+      'GET /api/v1/getmachinelog — QR scan: get machine details in old mobile format',
+  })
+  @ApiQuery({
+    name: 'id',
+    description: 'machineId (e.g. MCH-001)',
+    required: true,
+  })
   async getMachineLog(@Query('id') id: string) {
     if (!id) throw new BadRequestException('Machine ID is required');
 
@@ -89,7 +100,10 @@ export class LegacyMobileController {
         if (user) {
           clientData = {
             id: String(user.id),
-            name: [user.firstName, user.lastName].filter(Boolean).join(' ') || (user as any).email || '',
+            name:
+              [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+              (user as any).email ||
+              '',
           };
         }
       } catch {
@@ -138,12 +152,15 @@ export class LegacyMobileController {
     const itemIds =
       m.machineType === 'food'
         ? [...new Set((m.batches ?? []).map((b: any) => b.itemId as string))]
-        : m.itemIds ?? [];
+        : (m.itemIds ?? []);
 
-    const machineStatus = !m.isOnline ? 'offline'
-      : m.sleepMode ? 'sleep'
-      : m.isBusy ? 'busy'
-      : 'online';
+    const machineStatus = !m.isOnline
+      ? 'offline'
+      : m.sleepMode
+        ? 'sleep'
+        : m.isBusy
+          ? 'busy'
+          : 'online';
 
     return {
       success: true,

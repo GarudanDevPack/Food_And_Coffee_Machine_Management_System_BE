@@ -26,7 +26,6 @@ import { Roles } from '../roles/roles.decorator';
 import { RoleEnum } from '../roles/roles.enum';
 import { WalletService } from './wallet.service';
 import { TopupDto } from './dto/topup.dto';
-import { AgentTopupDto } from './dto/agent-topup.dto';
 import { SubmitTopupRequestDto } from './dto/submit-topup-request.dto';
 import { ReviewTopupRequestDto } from './dto/review-topup-request.dto';
 

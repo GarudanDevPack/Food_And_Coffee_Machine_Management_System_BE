@@ -12,7 +12,12 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiQuery, ApiOperation } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiBearerAuth,
+  ApiQuery,
+  ApiOperation,
+} from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { RolesGuard } from '../roles/roles.guard';
 import { Roles } from '../roles/roles.decorator';
@@ -49,7 +54,10 @@ export class MachinesController {
 
   @Get()
   @Roles(RoleEnum.super_admin, RoleEnum.admin, RoleEnum.client, RoleEnum.agent)
-  @ApiOperation({ summary: 'Get all machines (replaces /getallmachinelogs). Filter by clientId, agentId, orgId.' })
+  @ApiOperation({
+    summary:
+      'Get all machines (replaces /getallmachinelogs). Filter by clientId, agentId, orgId.',
+  })
   @ApiQuery({ name: 'clientId', required: false })
   @ApiQuery({ name: 'agentId', required: false })
   @ApiQuery({ name: 'orgId', required: false })
@@ -67,15 +75,26 @@ export class MachinesController {
    * with current stock and calibration timers (coffee) or active batches (food/vending).
    */
   @Get(':machineId/menu')
-  @Roles(RoleEnum.super_admin, RoleEnum.admin, RoleEnum.client, RoleEnum.agent, RoleEnum.customer)
-  @ApiOperation({ summary: 'Get items/menu available on a machine (replaces /getmachinesitems)' })
+  @Roles(
+    RoleEnum.super_admin,
+    RoleEnum.admin,
+    RoleEnum.client,
+    RoleEnum.agent,
+    RoleEnum.customer,
+  )
+  @ApiOperation({
+    summary:
+      'Get items/menu available on a machine (replaces /getmachinesitems)',
+  })
   getMachineMenu(@Param('machineId') machineId: string) {
     return this.machinesService.getMachineMenu(machineId);
   }
 
   @Get(':id')
   @Roles(RoleEnum.super_admin, RoleEnum.admin, RoleEnum.client, RoleEnum.agent)
-  @ApiOperation({ summary: 'Get machine by id or machineId string (replaces /getmachinelog)' })
+  @ApiOperation({
+    summary: 'Get machine by id or machineId string (replaces /getmachinelog)',
+  })
   findOne(@Param('id') id: string) {
     return this.machinesService.findOne(id);
   }

@@ -58,9 +58,7 @@ export class OrdersService implements OnModuleInit {
         await this.machineUpdateOrder(
           payload.id,
           payload.status,
-          payload.items
-            ? JSON.stringify(payload.items)
-            : undefined,
+          payload.items ? JSON.stringify(payload.items) : undefined,
         );
       } catch (e) {
         this.logger.error(
@@ -231,7 +229,9 @@ export class OrdersService implements OnModuleInit {
     });
 
     if ((machine as any).isBusy && !activeOrder) {
-      this.machinesService.setMachineBusy(dto.machineId, false).catch(() => null);
+      this.machinesService
+        .setMachineBusy(dto.machineId, false)
+        .catch(() => null);
       this.logger.warn(
         `[Order] Cleared stale isBusy flag on machine ${dto.machineId} — no active order found`,
       );
@@ -498,7 +498,9 @@ export class OrdersService implements OnModuleInit {
     this.machinesService
       .setMachineBusy(order.machineId, false)
       .catch((e) =>
-        this.logger.warn(`setMachineBusy(false) failed: ${(e as Error).message}`),
+        this.logger.warn(
+          `setMachineBusy(false) failed: ${(e as Error).message}`,
+        ),
       );
 
     this.notificationsService
@@ -547,7 +549,9 @@ export class OrdersService implements OnModuleInit {
     this.machinesService
       .setMachineBusy(order.machineId, false)
       .catch((e) =>
-        this.logger.warn(`setMachineBusy(false) failed: ${(e as Error).message}`),
+        this.logger.warn(
+          `setMachineBusy(false) failed: ${(e as Error).message}`,
+        ),
       );
 
     const notifMsg = refunded
@@ -653,7 +657,10 @@ export class OrdersService implements OnModuleInit {
    * Agents should see ALL orders on their machines — not just orders they placed —
    * so the filter is by machineId, not by order.agentId.
    */
-  async findAllByMachineIds(machineIds: string[], status?: string): Promise<Order[]> {
+  async findAllByMachineIds(
+    machineIds: string[],
+    status?: string,
+  ): Promise<Order[]> {
     if (!machineIds.length) return [];
     const filter: Record<string, any> = { machineId: { $in: machineIds } };
     if (status) filter.status = status;
@@ -775,7 +782,9 @@ export class OrdersService implements OnModuleInit {
 
     // Release machine busy lock when order reaches a terminal state
     if (['completed', 'failed'].includes(order.status)) {
-      this.machinesService.setMachineBusy(order.machineId, false).catch(() => null);
+      this.machinesService
+        .setMachineBusy(order.machineId, false)
+        .catch(() => null);
     }
   }
 
@@ -793,29 +802,47 @@ export class OrdersService implements OnModuleInit {
     // New: { userId, machineId, itemId, cupSize, quantity, currency?, paymentStatus? }
     // Old: { user: { id }, machine_id, items: [{ item_id, vol, qty, nozzle }], amount, currency? }
     // Mobile app also sends client: { id, name } and org: { id, name } — pass through to response
-    const clientInfo: { id: unknown; name?: string } | null = body.client ?? null;
+    const clientInfo: { id: unknown; name?: string } | null =
+      body.client ?? null;
     const orgInfo: { id: unknown; name?: string } | null = body.org ?? null;
 
     const userId: string = body.userId ?? body.user?.id;
     const machineId: string = body.machineId ?? body.machine_id;
     const currency: string = body.currency ?? 'LKR';
-    const rawPaymentStatus: string = body.payment_status ?? body.paymentStatus ?? 'pending';
-    const paymentStatus: string = rawPaymentStatus === 'paid' ? 'completed' : rawPaymentStatus;
+    const rawPaymentStatus: string =
+      body.payment_status ?? body.paymentStatus ?? 'pending';
+    const paymentStatus: string =
+      rawPaymentStatus === 'paid' ? 'completed' : rawPaymentStatus;
 
     // Normalise items list — support both multi-item array and flat single-item format
     const itemsList: any[] = body.items?.length
       ? body.items
-      : [{ item_id: body.itemId, qty: body.quantity ?? 1, vol: body.vol, cupSize: body.cupSize }];
+      : [
+          {
+            item_id: body.itemId,
+            qty: body.quantity ?? 1,
+            vol: body.vol,
+            cupSize: body.cupSize,
+          },
+        ];
 
-    const firstItemId: string = itemsList[0]?.item_id ?? itemsList[0]?.itemId ?? body.itemId;
+    const firstItemId: string =
+      itemsList[0]?.item_id ?? itemsList[0]?.itemId ?? body.itemId;
     if (!userId || !machineId || !firstItemId) {
-      throw new BadRequestException('userId, machineId, and at least one item with item_id are required');
+      throw new BadRequestException(
+        'userId, machineId, and at least one item with item_id are required',
+      );
     }
 
     // Cancel stale pending orders from same user on this machine (once, before loop)
     await this.orderModel.updateMany(
       { userId, machineId, status: 'pending' },
-      { $set: { status: 'cancelled', failureReason: 'Auto-cancelled: new order placed' } },
+      {
+        $set: {
+          status: 'cancelled',
+          failureReason: 'Auto-cancelled: new order placed',
+        },
+      },
     );
 
     // Verify machine exists and is online (once)
@@ -823,15 +850,22 @@ export class OrdersService implements OnModuleInit {
       .findByMachineId(machineId)
       .catch(() => null);
     if (!machine) throw new NotFoundException(`Machine ${machineId} not found`);
-    if (!(machine as any).isOnline) throw new BadRequestException('Machine is currently offline');
-    if ((machine as any).sleepMode) throw new BadRequestException('Machine is in sleep mode — please try again later');
+    if (!(machine as any).isOnline)
+      throw new BadRequestException('Machine is currently offline');
+    if ((machine as any).sleepMode)
+      throw new BadRequestException(
+        'Machine is in sleep mode — please try again later',
+      );
 
-    const machineType: 'coffee' | 'food' = (machine as any).machineType ?? 'coffee';
+    const machineType: 'coffee' | 'food' =
+      (machine as any).machineType ?? 'coffee';
 
     if (machineType !== 'food') {
       const waterLevel = (machine as any).sensor?.water;
       if (waterLevel && waterLevel !== 'present') {
-        throw new BadRequestException('Machine boiler has no water — please wait for refill');
+        throw new BadRequestException(
+          'Machine boiler has no water — please wait for refill',
+        );
       }
     }
 
@@ -869,21 +903,32 @@ export class OrdersService implements OnModuleInit {
       const itemId: string = itemEntry.item_id ?? itemEntry.itemId;
       const quantity: number = itemEntry.qty ?? 1;
       const volInput: string | undefined = itemEntry.vol ?? body.vol;
-      const cupSizeInput: string | undefined = itemEntry.cupSize ?? body.cupSize;
+      const cupSizeInput: string | undefined =
+        itemEntry.cupSize ?? body.cupSize;
       const nozzleInput: number | undefined =
         typeof itemEntry.nozzle === 'number' ? itemEntry.nozzle : undefined;
 
       if (!itemId) continue;
 
       // ── Server-side item + price resolution ──────────────────────────────
-      const itemRecord = await this.itemsService.findOne(itemId).catch(() => null);
+      const itemRecord = await this.itemsService
+        .findOne(itemId)
+        .catch(() => null);
       if (!itemRecord) {
         this.logger.warn(`[Order] Item ${itemId} not found — skipping`);
-        results.push({ itemId, success: false, error: `Item ${itemId} not found` });
+        results.push({
+          itemId,
+          success: false,
+          error: `Item ${itemId} not found`,
+        });
         continue;
       }
       if (!(itemRecord as any).isAvailable) {
-        results.push({ itemId, success: false, error: 'This item is currently not available' });
+        results.push({
+          itemId,
+          success: false,
+          error: 'This item is currently not available',
+        });
         continue;
       }
 
@@ -969,7 +1014,11 @@ export class OrdersService implements OnModuleInit {
         this.logger.warn(
           `[Order] Wallet deduction failed for item ${itemId}: ${(walletErr as Error).message}`,
         );
-        results.push({ itemId, success: false, error: (walletErr as Error).message });
+        results.push({
+          itemId,
+          success: false,
+          error: (walletErr as Error).message,
+        });
         continue;
       }
 
@@ -1000,7 +1049,9 @@ export class OrdersService implements OnModuleInit {
 
       // Deduct food batch stock
       if (machineType === 'food') {
-        await this.machinesService.deductBatchStock(machineId, itemId, quantity).catch(() => null);
+        await this.machinesService
+          .deductBatchStock(machineId, itemId, quantity)
+          .catch(() => null);
       }
 
       // ── Build MQTT ord string ───────────────────────────────────────────
@@ -1057,7 +1108,11 @@ export class OrdersService implements OnModuleInit {
         order.status = 'failed';
         order.failureReason = 'Machine communication error';
         await order.save();
-        await this.walletService.refund(effectiveUserId, serverTotalAmount, orderId);
+        await this.walletService.refund(
+          effectiveUserId,
+          serverTotalAmount,
+          orderId,
+        );
         results.push({
           itemId,
           orderId,

@@ -164,7 +164,12 @@ export class OrganizationsService {
     await this.machineModel
       .findOneAndUpdate(
         { machineId },
-        { $set: { orgId: (org as any)._id.toString(), clientId: org.clientUserId } },
+        {
+          $set: {
+            orgId: (org as any)._id.toString(),
+            clientId: org.clientUserId,
+          },
+        },
       )
       .exec();
 

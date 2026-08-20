@@ -23,7 +23,12 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiQuery, ApiExcludeEndpoint } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiQuery,
+  ApiExcludeEndpoint,
+} from '@nestjs/swagger';
 import { MachinesService } from '../machines/machines.service';
 
 @ApiTags('Legacy Machines (No /api prefix)')
@@ -32,8 +37,14 @@ export class LegacyMachinesController {
   constructor(private readonly machinesService: MachinesService) {}
 
   @Get('getmachinesitems')
-  @ApiOperation({ summary: 'GET /getmachinesitems — items available on a machine' })
-  @ApiQuery({ name: 'id', description: 'machineId (e.g. MCH-001)', required: true })
+  @ApiOperation({
+    summary: 'GET /getmachinesitems — items available on a machine',
+  })
+  @ApiQuery({
+    name: 'id',
+    description: 'machineId (e.g. MCH-001)',
+    required: true,
+  })
   async getMachineItems(@Query('id') id: string) {
     if (!id) throw new NotFoundException('Machine ID is required');
     const menu = await this.machinesService.getMachineMenu(id);
@@ -45,15 +56,18 @@ export class LegacyMachinesController {
   }
 
   @Get('getmachinelog')
-  @ApiExcludeEndpoint()  // use GET /api/v1/getmachinelog instead (MachineQrController)
+  @ApiExcludeEndpoint() // use GET /api/v1/getmachinelog instead (MachineQrController)
   async getMachineLog(@Query('id') id: string) {
     if (!id) throw new NotFoundException('Machine ID is required');
     const machine = await this.machinesService.findByMachineId(id);
     const m = machine as any;
-    const machineStatus = !m.isOnline ? 'offline'
-      : m.sleepMode ? 'sleep'
-      : m.isBusy ? 'busy'
-      : 'online';
+    const machineStatus = !m.isOnline
+      ? 'offline'
+      : m.sleepMode
+        ? 'sleep'
+        : m.isBusy
+          ? 'busy'
+          : 'online';
     return {
       success: true,
       message: 'Machine retrieved successfully',
@@ -62,7 +76,10 @@ export class LegacyMachinesController {
   }
 
   @Get('getvolumesizes')
-  @ApiOperation({ summary: 'GET /getvolumesizes — available cup sizes for an item on a machine' })
+  @ApiOperation({
+    summary:
+      'GET /getvolumesizes — available cup sizes for an item on a machine',
+  })
   @ApiQuery({ name: 'machine_id', required: true })
   @ApiQuery({ name: 'item_id', required: true })
   async getVolumeSizes(
@@ -92,7 +109,9 @@ export class LegacyMachinesController {
   }
 
   @Get('getallmachinelogs')
-  @ApiOperation({ summary: 'GET /getallmachinelogs — all machines (no filters)' })
+  @ApiOperation({
+    summary: 'GET /getallmachinelogs — all machines (no filters)',
+  })
   async getAllMachineLogs() {
     const machines = await this.machinesService.findAll();
     return {
@@ -103,7 +122,9 @@ export class LegacyMachinesController {
   }
 
   @Get('getallmachinebyclient')
-  @ApiOperation({ summary: 'GET /getallmachinebyclient — machines filtered by client' })
+  @ApiOperation({
+    summary: 'GET /getallmachinebyclient — machines filtered by client',
+  })
   @ApiQuery({ name: 'client_id', required: false })
   async getAllMachinesByClient(@Query('client_id') clientId: string) {
     const machines = await this.machinesService.findAll(clientId);
@@ -116,7 +137,10 @@ export class LegacyMachinesController {
 
   @Put('updatemachinelog')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'PUT /updatemachinelog — trigger flush / toggle sleep / update fields' })
+  @ApiOperation({
+    summary:
+      'PUT /updatemachinelog — trigger flush / toggle sleep / update fields',
+  })
   async updateMachineLog(@Body() body: any) {
     const { id, flush_mode, sleep_mode } = body;
     if (!id) throw new BadRequestException('Machine ID is required');
@@ -146,7 +170,9 @@ export class LegacyMachinesController {
 
   @Put('updatemachinelogstatus')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'PUT /updatemachinelogstatus — mark machine online or offline' })
+  @ApiOperation({
+    summary: 'PUT /updatemachinelogstatus — mark machine online or offline',
+  })
   async updateMachineLogStatus(@Body() body: any) {
     const { id, isOnline } = body;
     if (!id) throw new BadRequestException('Machine ID is required');

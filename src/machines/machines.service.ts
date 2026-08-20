@@ -457,7 +457,9 @@ export class MachinesService implements OnModuleInit {
             ? v.buffer
             : Uint8Array.from(Object.values(v.buffer) as number[]);
         if (buf.length === 12) return new Types.ObjectId(buf).toHexString();
-      } catch { /* fall through */ }
+      } catch {
+        /* fall through */
+      }
     }
     if (typeof v.toString === 'function') {
       const s = v.toString();
@@ -472,7 +474,9 @@ export class MachinesService implements OnModuleInit {
    * from the Items collection. Filters out any IDs that are not valid ObjectIds
    * so the $in query never receives "[object Object]".
    */
-  private async populateInventoryNames(machines: Machine[]): Promise<Machine[]> {
+  private async populateInventoryNames(
+    machines: Machine[],
+  ): Promise<Machine[]> {
     const ids = [
       ...new Set(
         machines
@@ -522,7 +526,10 @@ export class MachinesService implements OnModuleInit {
       machine = await this.machineModel.findById(id).lean().exec();
     }
     if (!machine) {
-      machine = await this.machineModel.findOne({ machineId: id }).lean().exec();
+      machine = await this.machineModel
+        .findOne({ machineId: id })
+        .lean()
+        .exec();
     }
     if (!machine) throw new NotFoundException(`Machine ${id} not found`);
     const [populated] = await this.populateInventoryNames([machine as Machine]);
@@ -1244,10 +1251,10 @@ export class MachinesService implements OnModuleInit {
         (raw as any).machineType === 'food'
           ? (activeBatches[0]?.nozzleId ?? 1)
           : ((inv as any)?.nozzle ??
-             ((raw as any)?.calibration as any[] ?? []).find(
-               (c: any) => String(c.itemId) === id,
-             )?.nozzle ??
-             1);
+            (((raw as any)?.calibration as any[]) ?? []).find(
+              (c: any) => String(c.itemId) === id,
+            )?.nozzle ??
+            1);
 
       return {
         _id: item._id,
