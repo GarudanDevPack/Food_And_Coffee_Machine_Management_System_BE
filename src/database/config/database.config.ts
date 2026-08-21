@@ -6,41 +6,40 @@ import {
   Min,
   Max,
   IsString,
-  ValidateIf,
   IsBoolean,
 } from 'class-validator';
 import validateConfig from '../../utils/validate-config';
 import { DatabaseConfig } from './database-config.type';
 
 class EnvironmentVariablesValidator {
-  @ValidateIf((envValues) => envValues.DATABASE_URL)
   @IsString()
+  @IsOptional()
   DATABASE_URL: string;
 
-  @ValidateIf((envValues) => !envValues.DATABASE_URL)
   @IsString()
+  @IsOptional()
   DATABASE_TYPE: string;
 
-  @ValidateIf((envValues) => !envValues.DATABASE_URL)
   @IsString()
+  @IsOptional()
   DATABASE_HOST: string;
 
-  @ValidateIf((envValues) => !envValues.DATABASE_URL)
   @IsInt()
   @Min(0)
   @Max(65535)
+  @IsOptional()
   DATABASE_PORT: number;
 
-  @ValidateIf((envValues) => !envValues.DATABASE_URL)
   @IsString()
+  @IsOptional()
   DATABASE_PASSWORD: string;
 
-  @ValidateIf((envValues) => !envValues.DATABASE_URL)
   @IsString()
+  @IsOptional()
   DATABASE_NAME: string;
 
-  @ValidateIf((envValues) => !envValues.DATABASE_URL)
   @IsString()
+  @IsOptional()
   DATABASE_USERNAME: string;
 
   @IsBoolean()
