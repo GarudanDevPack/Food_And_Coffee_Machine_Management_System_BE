@@ -12,11 +12,19 @@ export class MongooseConfigService implements MongooseOptionsFactory {
   constructor(private configService: ConfigService<AllConfigType>) {}
 
   createMongooseOptions(): MongooseModuleOptions {
+    const url = this.configService.get('database.url', { infer: true });
+    const username = this.configService.get('database.username', {
+      infer: true,
+    });
+    const password = this.configService.get('database.password', {
+      infer: true,
+    });
     return {
-      uri: this.configService.get('database.url', { infer: true }),
+      uri: url,
       dbName: this.configService.get('database.name', { infer: true }),
-      user: this.configService.get('database.username', { infer: true }),
-      pass: this.configService.get('database.password', { infer: true }),
+      // Only pass user/pass when not embedded in the URI (avoids overriding Atlas credentials)
+      ...(username && !url?.includes('@') ? { user: username } : {}),
+      ...(password && !url?.includes('@') ? { pass: password } : {}),
       connectionFactory(connection) {
         connection.plugin(mongooseAutoPopulate);
         return connection;
