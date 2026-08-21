@@ -1,26 +1,12 @@
 import { registerAs } from '@nestjs/config';
 import { AppConfig } from './app-config.type';
 import validateConfig from '.././utils/validate-config';
-import {
-  IsEnum,
-  IsInt,
-  IsOptional,
-  IsString,
-  IsUrl,
-  Max,
-  Min,
-} from 'class-validator';
-
-enum Environment {
-  Development = 'development',
-  Production = 'production',
-  Test = 'test',
-}
+import { IsInt, IsOptional, IsString, IsUrl, Max, Min } from 'class-validator';
 
 class EnvironmentVariablesValidator {
-  @IsEnum(Environment)
+  @IsString()
   @IsOptional()
-  NODE_ENV: Environment;
+  NODE_ENV: string;
 
   @IsInt()
   @Min(0)
