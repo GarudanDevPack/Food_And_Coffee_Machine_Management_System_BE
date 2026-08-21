@@ -20,6 +20,7 @@ class EnvironmentVariablesValidator {
   MAIL_PORT: number;
 
   @IsString()
+  @IsOptional()
   MAIL_HOST: string;
 
   @IsString()
@@ -31,18 +32,23 @@ class EnvironmentVariablesValidator {
   MAIL_PASSWORD: string;
 
   @IsEmail()
+  @IsOptional()
   MAIL_DEFAULT_EMAIL: string;
 
   @IsString()
+  @IsOptional()
   MAIL_DEFAULT_NAME: string;
 
   @IsBoolean()
+  @IsOptional()
   MAIL_IGNORE_TLS: boolean;
 
   @IsBoolean()
+  @IsOptional()
   MAIL_SECURE: boolean;
 
   @IsBoolean()
+  @IsOptional()
   MAIL_REQUIRE_TLS: boolean;
 }
 
