@@ -1,4 +1,8 @@
 import 'dotenv/config';
+console.log(
+  '[STARTUP] DATABASE_URL =',
+  process.env.DATABASE_URL ?? '(undefined)',
+);
 import { RequestMethod, ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';

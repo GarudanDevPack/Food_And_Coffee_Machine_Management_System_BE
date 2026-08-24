@@ -12,13 +12,16 @@ export class MongooseConfigService implements MongooseOptionsFactory {
   constructor(private configService: ConfigService<AllConfigType>) {}
 
   createMongooseOptions(): MongooseModuleOptions {
-    const url = this.configService.get('database.url', { infer: true });
-    const username = this.configService.get('database.username', {
-      infer: true,
-    });
-    const password = this.configService.get('database.password', {
-      infer: true,
-    });
+    const url =
+      process.env.DATABASE_URL ||
+      this.configService.get('database.url', { infer: true });
+    const username =
+      process.env.DATABASE_USERNAME ||
+      this.configService.get('database.username', { infer: true });
+    const password =
+      process.env.DATABASE_PASSWORD ||
+      this.configService.get('database.password', { infer: true });
+    console.log('[MongooseConfig] url =', url ?? '(undefined)');
     return {
       uri: url,
       dbName: this.configService.get('database.name', { infer: true }),
