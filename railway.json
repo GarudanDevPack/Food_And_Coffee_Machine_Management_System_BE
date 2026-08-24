@@ -5,7 +5,7 @@
     "buildCommand": "npm run build"
   },
   "deploy": {
-    "startCommand": "NODE_OPTIONS=--max-old-space-size=4096 node dist/main",
+    "startCommand": "npm run start:prod",
     "healthcheckPath": "/",
     "healthcheckTimeout": 300
   }
