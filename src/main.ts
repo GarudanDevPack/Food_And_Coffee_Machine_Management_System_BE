@@ -88,16 +88,16 @@ async function bootstrap() {
     new ResolvePromisesInterceptor(),
   );
 
+  const backendDomain = configService.getOrThrow('app.backendDomain', {
+    infer: true,
+  });
   const options = new DocumentBuilder()
     .setTitle('Coffee Vending API')
     .setDescription(
       'API docs — auth via HttpOnly cookie (Bearer fallback for Swagger)',
     )
     .setVersion('1.0')
-    .addServer(
-      process.env.BACKEND_DOMAIN ?? 'http://localhost:3000',
-      'Local development',
-    )
+    .addServer(backendDomain, 'API server')
     .addBearerAuth()
     .addCookieAuth('accessToken')
     .addGlobalParameters({
