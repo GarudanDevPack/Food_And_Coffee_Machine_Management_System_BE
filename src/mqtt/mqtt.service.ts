@@ -269,14 +269,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
    * Only publishes to machine/log/{machineId} — the topic firmware subscribes to.
    */
   flush(machineId: string): Promise<void> {
-    // Exact payload the old backend (machineLogController.js updateMachine) sent:
-    // String(undefined) = "undefined", String(true) = "true"
-    // The physical machine firmware expects these exact string values.
     return this.publish(
       `machine/log/${machineId}`,
-      {
-        command: { sleep: 'false', flush: 'true', configMode: 'false' },
-      },
+      { sleep: 'false', flush: 'true', configMode: 'false' },
       { qos: 1 },
     );
   }
@@ -304,7 +299,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   sleep(machineId: string): void {
     void this.publish(
       `machine/log/${machineId}`,
-      { command: { flush: 'false', sleep: 'true', configMode: 'false' } },
+      { flush: 'false', sleep: 'true', configMode: 'false' },
       { qos: 0 },
     );
   }
@@ -319,7 +314,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   wake(machineId: string): void {
     void this.publish(
       `machine/log/${machineId}`,
-      { command: { flush: 'false', sleep: 'false', configMode: 'false' } },
+      { flush: 'false', sleep: 'false', configMode: 'false' },
       { qos: 0, retain: true },
     );
     this.logger.log(
