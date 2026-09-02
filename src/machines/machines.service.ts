@@ -5,6 +5,7 @@ import {
   ConflictException,
   Logger,
   OnModuleInit,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Model, Types } from 'mongoose';
@@ -693,7 +694,17 @@ export class MachinesService implements OnModuleInit {
       { $set: { flushMode: true } },
     );
 
-    await this.mqttService.flush(mid);
+    try {
+      await this.mqttService.flush(mid);
+    } catch {
+      await this.machineModel.updateOne(
+        { machineId: mid },
+        { $set: { flushMode: false } },
+      );
+      throw new ServiceUnavailableException(
+        'MQTT broker temporarily offline — wait a few seconds and try again',
+      );
+    }
     this.logger.log(`Manual flush triggered for machine ${mid} (${type})`);
 
     // Auto-reset flushMode after 30 seconds (old backend behaviour)
