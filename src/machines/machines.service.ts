@@ -693,12 +693,13 @@ export class MachinesService implements OnModuleInit {
     }
     this.logger.log(`Manual flush triggered for machine ${mid} (${type})`);
 
-    // Auto-reset flushMode after 30 seconds (old backend behaviour)
+    // Auto-reset flushMode after 30 seconds and push socket event so FE clears badge immediately
     setTimeout(async () => {
       await this.machineModel.updateOne(
         { machineId: mid },
         { $set: { flushMode: false } },
       );
+      this.eventsGateway.emitMachineStatus({ machineId: mid, flushMode: false });
       this.logger.log(`Flush completed for machine ${mid}`);
     }, 30_000);
 
