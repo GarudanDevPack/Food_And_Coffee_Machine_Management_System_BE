@@ -299,7 +299,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   sleep(machineId: string): void {
     void this.publish(
       `machine/log/${machineId}`,
-      { flush: 'false', sleep: 'true', configMode: 'false' },
+      { command: { flush: 'false', sleep: 'true', configMode: 'false' } },
       { qos: 0 },
     );
   }
@@ -314,7 +314,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   wake(machineId: string): void {
     void this.publish(
       `machine/log/${machineId}`,
-      { flush: 'false', sleep: 'false', configMode: 'false' },
+      { command: { flush: 'false', sleep: 'false', configMode: 'false' } },
       { qos: 0, retain: true },
     );
     this.logger.log(
