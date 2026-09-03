@@ -119,6 +119,19 @@ export class MachinesService implements OnModuleInit {
         }
         if (payload.status === 'online') {
           update.sleepMode = false;
+          // Atomically detect the offline→online transition.
+          // Only one concurrent MQTT callback wins this conditional update,
+          // so clearRetainedWake is called exactly once per reconnect.
+          const transition = await this.machineModel.updateOne(
+            { machineId: payload.machine_id, isOnline: { $ne: true } },
+            { $set: { isOnline: true, sleepMode: false } },
+          );
+          if (transition.modifiedCount === 1) {
+            this.mqttService.clearRetainedWake(payload.machine_id);
+            this.logger.log(
+              `Machine ${payload.machine_id} came online — cleared retained wake message`,
+            );
+          }
         }
       }
 
