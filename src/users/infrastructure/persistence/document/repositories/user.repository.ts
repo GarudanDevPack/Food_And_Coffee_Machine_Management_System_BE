@@ -58,6 +58,11 @@ export class UsersDocumentRepository implements UserRepository {
     return userObjects.map((userObject) => UserMapper.toDomain(userObject));
   }
 
+  async findAll(): Promise<User[]> {
+    const userObjects = await this.usersModel.find().sort({ createdAt: -1 });
+    return userObjects.map((u) => UserMapper.toDomain(u));
+  }
+
   async findById(id: User['id']): Promise<NullableType<User>> {
     const userObject = await this.usersModel.findById(id);
     return userObject ? UserMapper.toDomain(userObject) : null;

@@ -88,6 +88,15 @@ export class UsersController {
   }
 
   @JwtAuth(RoleEnum.super_admin, RoleEnum.admin)
+  @ApiOkResponse({ type: User, isArray: true })
+  @SerializeOptions({ groups: ['admin'] })
+  @Get('all')
+  @HttpCode(HttpStatus.OK)
+  findAll(): Promise<User[]> {
+    return this.usersService.findAll();
+  }
+
+  @JwtAuth(RoleEnum.super_admin, RoleEnum.admin)
   @ApiOkResponse({ type: User })
   @SerializeOptions({ groups: ['admin'] })
   @Get(':id')

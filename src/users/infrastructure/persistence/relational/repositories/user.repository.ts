@@ -57,6 +57,11 @@ export class UsersRelationalRepository implements UserRepository {
     return entities.map((user) => UserMapper.toDomain(user));
   }
 
+  async findAll(): Promise<User[]> {
+    const entities = await this.usersRepository.find({ order: { createdAt: 'DESC' } });
+    return entities.map((e) => UserMapper.toDomain(e));
+  }
+
   async findById(id: User['id']): Promise<NullableType<User>> {
     const entity = await this.usersRepository.findOne({
       where: { id: Number(id) },
