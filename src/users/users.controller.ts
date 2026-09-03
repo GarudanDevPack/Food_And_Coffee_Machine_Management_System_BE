@@ -92,7 +92,7 @@ export class UsersController {
   @SerializeOptions({ groups: ['admin'] })
   @Get('all')
   @HttpCode(HttpStatus.OK)
-  findAll(): Promise<User[]> {
+  listAll(): Promise<User[]> {
     return this.usersService.findAll();
   }
 
