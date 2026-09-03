@@ -118,20 +118,6 @@ export class MachinesService implements OnModuleInit {
           update.isBusy = true;
         }
         if (payload.status === 'online') {
-          // Clear the retained wake message only on the transition from offline → online.
-          // We check isOnline (not sleepMode) because setSleepMode(false) already clears
-          // sleepMode in DB before the machine sends its first heartbeat — so sleepMode
-          // would always be false here and the old check never fired.
-          const existing = await this.machineModel
-            .findOne({ machineId: payload.machine_id }, { isOnline: 1 })
-            .lean()
-            .exec();
-          if (existing && (existing as any).isOnline === false) {
-            this.mqttService.clearRetainedWake(payload.machine_id);
-            this.logger.log(
-              `Machine ${payload.machine_id} came online — cleared retained wake message`,
-            );
-          }
           update.sleepMode = false;
         }
       }
@@ -1137,6 +1123,31 @@ export class MachinesService implements OnModuleInit {
     }
     this.logger.log(`Machine ${mid} sleep mode → ${sleep}`);
     return machine;
+  }
+
+  // ─── Config Mode ─────────────────────────────────────────────────────────────
+
+  async setConfigMode(
+    id: string,
+    enabled: boolean,
+  ): Promise<{ message: string }> {
+    const machine = await this.machineModel
+      .findOne({
+        $or: [{ machineId: id }, ...(id.length === 24 ? [{ _id: id }] : [])],
+      })
+      .lean()
+      .exec();
+    if (!machine) throw new NotFoundException(`Machine ${id} not found`);
+    const mid = (machine as any).machineId as string;
+    await this.machineModel.updateOne(
+      { machineId: mid },
+      { $set: { configMode: enabled } },
+    );
+    this.mqttService.setConfigMode(mid, enabled);
+    this.logger.log(`Machine ${mid} config mode → ${enabled}`);
+    return {
+      message: `Config mode ${enabled ? 'enabled' : 'disabled'} for machine ${mid}`,
+    };
   }
 
   /**

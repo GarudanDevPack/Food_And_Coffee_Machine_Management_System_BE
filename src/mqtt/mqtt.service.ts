@@ -322,6 +322,20 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  setConfigMode(machineId: string, enabled: boolean): void {
+    void this.publish(
+      `machine/log/${machineId}`,
+      {
+        command: {
+          sleep: 'false',
+          flush: 'false',
+          configMode: enabled ? 'true' : 'false',
+        },
+      },
+      { qos: 0 },
+    );
+  }
+
   /**
    * Clear the retained wake message from the broker once the machine is awake.
    * Call this after the machine sends its first online heartbeat post-wake.
