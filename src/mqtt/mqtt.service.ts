@@ -271,7 +271,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   flush(machineId: string): Promise<void> {
     return this.publish(
       `machine/log/${machineId}`,
-      { command: { sleep: 'true', flush: 'false', configMode: 'false' } },
+      { command: { sleep: 'false', flush: 'true', configMode: 'false' } },
       { qos: 1 },
     );
   }
