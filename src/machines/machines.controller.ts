@@ -236,17 +236,11 @@ export class MachinesController {
     return this.machinesService.setSleepMode(machineId, false);
   }
 
-  // ─── Config Mode Endpoints ───────────────────────────────────────────────────
+  // ─── Config Mode Endpoint ────────────────────────────────────────────────────
 
-  @Post(':machineId/config-mode/enable')
+  @Post(':machineId/config-mode')
   @Roles(RoleEnum.super_admin, RoleEnum.admin)
-  enableConfigMode(@Param('machineId') machineId: string) {
-    return this.machinesService.setConfigMode(machineId, true);
-  }
-
-  @Post(':machineId/config-mode/disable')
-  @Roles(RoleEnum.super_admin, RoleEnum.admin)
-  disableConfigMode(@Param('machineId') machineId: string) {
-    return this.machinesService.setConfigMode(machineId, false);
+  triggerConfigMode(@Param('machineId') machineId: string) {
+    return this.machinesService.triggerConfigMode(machineId);
   }
 }

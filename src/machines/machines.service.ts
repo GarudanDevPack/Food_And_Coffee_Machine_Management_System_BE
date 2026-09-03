@@ -1127,10 +1127,13 @@ export class MachinesService implements OnModuleInit {
 
   // ─── Config Mode ─────────────────────────────────────────────────────────────
 
-  async setConfigMode(
-    id: string,
-    enabled: boolean,
-  ): Promise<{ message: string }> {
+  /**
+   * One-shot config mode trigger matching old backend behaviour:
+   * DB resets to configMode:false immediately after publishing so the machine
+   * is never left stuck in config mode in the database. The firmware exits
+   * config mode on its own after processing the received settings.
+   */
+  async triggerConfigMode(id: string): Promise<{ message: string }> {
     const machine = await this.machineModel
       .findOne({
         $or: [{ machineId: id }, ...(id.length === 24 ? [{ _id: id }] : [])],
@@ -1139,15 +1142,14 @@ export class MachinesService implements OnModuleInit {
       .exec();
     if (!machine) throw new NotFoundException(`Machine ${id} not found`);
     const mid = (machine as any).machineId as string;
+    // Reset DB to false immediately (old backend resets config_mode right away)
     await this.machineModel.updateOne(
       { machineId: mid },
-      { $set: { configMode: enabled } },
+      { $set: { configMode: false } },
     );
-    this.mqttService.setConfigMode(mid, enabled);
-    this.logger.log(`Machine ${mid} config mode → ${enabled}`);
-    return {
-      message: `Config mode ${enabled ? 'enabled' : 'disabled'} for machine ${mid}`,
-    };
+    this.mqttService.setConfigMode(mid, true);
+    this.logger.log(`Config mode triggered for machine ${mid}`);
+    return { message: `Config mode triggered for machine ${mid}` };
   }
 
   /**
