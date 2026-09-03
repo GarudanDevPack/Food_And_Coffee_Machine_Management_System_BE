@@ -271,7 +271,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   flush(machineId: string): Promise<void> {
     return this.publish(
       `machine/log/${machineId}`,
-      { command: { sleep: 'false', flush: 'true', configMode: 'false' } },
+      { command: { flush: 'true' } },
       { qos: 1 },
     );
   }
@@ -299,7 +299,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   sleep(machineId: string): void {
     void this.publish(
       `machine/log/${machineId}`,
-      { command: { flush: 'false', sleep: 'true', configMode: 'false' } },
+      { command: { sleep: 'true' } },
       { qos: 0 },
     );
   }
@@ -314,7 +314,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   wake(machineId: string): void {
     void this.publish(
       `machine/log/${machineId}`,
-      { command: { flush: 'false', sleep: 'false', configMode: 'false' } },
+      { command: { sleep: 'false' } },
       { qos: 0, retain: true },
     );
     this.logger.log(
@@ -323,15 +323,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   }
 
   setConfigMode(machineId: string, enabled: boolean): void {
+    if (!enabled) return; // firmware has no exitConfigMode — machine self-exits
     void this.publish(
       `machine/log/${machineId}`,
-      {
-        command: {
-          sleep: 'false',
-          flush: 'false',
-          configMode: enabled ? 'true' : 'false',
-        },
-      },
+      { command: { configMode: 'true' } },
       { qos: 0 },
     );
   }
